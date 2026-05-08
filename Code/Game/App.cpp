@@ -112,19 +112,54 @@ void App::Startup()
 		IntVec2 winDim = g_theWindow->GetClientDimensions();
 		g_theRTPath->RecreateOutput((uint32_t)winDim.x, (uint32_t)winDim.y);
 
-		std::vector<float>    objVerts;
-		std::vector<uint32_t> objIndices;
-		std::vector<uint32_t> triMatIds;
-		std::vector<float>    matColorsRGB;
+		// Parse sponza.mtl for newmtl + map_Kd.
+		std::map<std::string, std::string> matToTexPath;
+		{
+			FILE* fp = nullptr;
+			fopen_s(&fp, "Data/Models/Sponza/sponza.mtl", "r");
+			if (fp)
+			{
+				char line[1024];
+				std::string current;
+				auto strip = [](std::string& s) {
+					while (!s.empty() && (s.back() == '\r' || s.back() == '\n' ||
+					                      s.back() == ' '  || s.back() == '\t'))
+						s.pop_back();
+				};
+				while (fgets(line, sizeof(line), fp))
+				{
+					if (strncmp(line, "newmtl ", 7) == 0)
+					{
+						current = std::string(line + 7);
+						strip(current);
+					}
+					else if (strncmp(line, "map_Kd ", 7) == 0 && !current.empty())
+					{
+						std::string p(line + 7);
+						strip(p);
+						matToTexPath[current] = "Data/Models/Sponza/" + p;
+					}
+				}
+				fclose(fp);
+			}
+		}
+
+		std::vector<float>              objVerts;
+		std::vector<uint32_t>           objIndices;
+		std::vector<float>              objUVs;
+		std::vector<uint32_t>           objUVIndices;
+		std::vector<uint32_t>           triMatIds;
+		std::vector<float>              matColorsRGB;
+		std::vector<std::string>        matNames;
 		std::map<std::string, uint32_t> matNameToId;
 		{
 			FILE* fp = nullptr;
 			fopen_s(&fp, "Data/Models/Sponza/sponza.obj", "r");
 			if (!fp) ERROR_AND_DIE("App::Startup: failed to open Data/Models/Sponza/sponza.obj");
 
-			// Slot 0 is a fallback for triangles emitted before any usemtl line.
 			uint32_t currentMatId = 0;
 			matColorsRGB.push_back(0.7f); matColorsRGB.push_back(0.7f); matColorsRGB.push_back(0.7f);
+			matNames.push_back("");
 
 			char line[1024];
 			while (fgets(line, sizeof(line), fp))
@@ -139,17 +174,34 @@ void App::Startup()
 						objVerts.push_back(z);
 					}
 				}
+				else if (line[0] == 'v' && line[1] == 't' && line[2] == ' ')
+				{
+					float u, v;
+					if (sscanf_s(line + 3, "%f %f", &u, &v) == 2)
+					{
+						objUVs.push_back(u);
+						objUVs.push_back(1.0f - v);   // OBJ V flips relative to image V
+					}
+				}
 				else if (line[0] == 'f' && line[1] == ' ')
 				{
-					unsigned int v1, v2, v3;
-					if (sscanf_s(line + 2, "%u/%*u/%*u %u/%*u/%*u %u/%*u/%*u", &v1, &v2, &v3) == 3 ||
-					    sscanf_s(line + 2, "%u//%*u %u//%*u %u//%*u",          &v1, &v2, &v3) == 3 ||
-					    sscanf_s(line + 2, "%u/%*u %u/%*u %u/%*u",             &v1, &v2, &v3) == 3 ||
-					    sscanf_s(line + 2, "%u %u %u",                         &v1, &v2, &v3) == 3)
+					unsigned int v1, v2, v3, t1 = 1, t2 = 1, t3 = 1;
+					int got = 0;
+					if (sscanf_s(line + 2, "%u/%u/%*u %u/%u/%*u %u/%u/%*u",
+					             &v1, &t1, &v2, &t2, &v3, &t3) == 6) got = 1;
+					else if (sscanf_s(line + 2, "%u/%u %u/%u %u/%u",
+					                  &v1, &t1, &v2, &t2, &v3, &t3) == 6) got = 1;
+					else if (sscanf_s(line + 2, "%u//%*u %u//%*u %u//%*u",
+					                  &v1, &v2, &v3) == 3) got = 1;
+					else if (sscanf_s(line + 2, "%u %u %u", &v1, &v2, &v3) == 3) got = 1;
+					if (got)
 					{
 						objIndices.push_back(v1 - 1);
 						objIndices.push_back(v2 - 1);
 						objIndices.push_back(v3 - 1);
+						objUVIndices.push_back(t1 - 1);
+						objUVIndices.push_back(t2 - 1);
+						objUVIndices.push_back(t3 - 1);
 						triMatIds.push_back(currentMatId);
 					}
 				}
@@ -164,9 +216,8 @@ void App::Startup()
 					{
 						currentMatId = (uint32_t)(matColorsRGB.size() / 3);
 						matNameToId[name] = currentMatId;
+						matNames.push_back(name);
 
-						// MTL Kd is uniform gray (color lives in textures we don't load yet);
-						// hash the material name to a distinct palette slot.
 						uint32_t h = 0x811C9DC5u;
 						for (char ch : name) { h ^= (uint8_t)ch; h *= 0x01000193u; }
 						auto chan = [&](uint32_t bits) {
@@ -186,6 +237,25 @@ void App::Startup()
 			fclose(fp);
 		}
 
+		// Build a unique-texture-path list and per-material slot map.
+		std::vector<std::string> uniqueTexPaths;
+		std::map<std::string, uint32_t> texPathToSlot;
+		std::vector<int32_t> matTexSlot(matNames.size(), -1);
+		for (size_t m = 0; m < matNames.size(); ++m) {
+			auto it = matToTexPath.find(matNames[m]);
+			if (it == matToTexPath.end()) continue;
+			auto sit = texPathToSlot.find(it->second);
+			if (sit == texPathToSlot.end()) {
+				if (uniqueTexPaths.size() >= VulkanRTPath::kMaxRTTextures) continue;
+				uint32_t slot = (uint32_t)uniqueTexPaths.size();
+				texPathToSlot[it->second] = slot;
+				uniqueTexPaths.push_back(it->second);
+				matTexSlot[m] = (int32_t)slot;
+			} else {
+				matTexSlot[m] = (int32_t)sit->second;
+			}
+		}
+
 		static VulkanBLAS s_sponzaBLAS;
 		s_sponzaBLAS = g_theRTPath->BuildBLAS(
 			objVerts.data(), (uint32_t)(objVerts.size() / 3),
@@ -194,6 +264,13 @@ void App::Startup()
 		g_theRTPath->SetMaterialBuffers(
 			matColorsRGB.data(), (uint32_t)(matColorsRGB.size() / 3),
 			triMatIds.data(),    (uint32_t)triMatIds.size());
+
+		g_theRTPath->SetUVs(
+			objUVs.data(), (uint32_t)(objUVs.size() / 2),
+			objUVIndices.data(), (uint32_t)triMatIds.size());
+
+		g_theRTPath->SetTextures(uniqueTexPaths,
+		                        matTexSlot.data(), (uint32_t)matTexSlot.size());
 
 		// Crytek OBJ axes (Y-up, +X-right, +Z-toward-viewer) → engine
 		// (X-fwd, Y-left, Z-up), uniform 0.01 scale.
