@@ -8,7 +8,7 @@ layout(set = 0, binding = 2)  uniform CameraUBO {
     vec4 forward_fovTan;
     vec4 right_pad;
     vec4 up_pad;
-    vec4 misc;       // x = frameId, y = numLights
+    vec4 misc;
 } cam;
 layout(set = 0, binding = 3)  readonly buffer Positions    { float p[]; }  pbuf;
 layout(set = 0, binding = 4)  readonly buffer Indices      { uint  i[]; }  ibuf;
@@ -20,6 +20,9 @@ layout(set = 0, binding = 9)  readonly buffer UVCoords     { float uv[]; } uvbuf
 layout(set = 0, binding = 10) readonly buffer UVIdx        { uint  i[]; }  uvidx;
 layout(set = 0, binding = 11) readonly buffer MatNormalSlot{ int   s[]; }  matnslot;
 layout(set = 0, binding = 12) readonly buffer Lights       { vec4  d[]; }  lbuf;
+// Reservoir slot is 8 ints (32B):
+// [0]=lightIdx, [1]=wsum bits, [2]=M, [3]=pad,
+// [4..6]=normal.xyz bits, [7]=depth bits.
 layout(set = 0, binding = 13) buffer Reservoirs0           { int   d[]; }  resA;
 layout(set = 0, binding = 14) buffer Reservoirs1           { int   d[]; }  resB;
 
@@ -45,6 +48,8 @@ struct Reservoir {
     int   lightIdx;
     float wsum;
     int   M;
+    vec3  normal;
+    float depth;
 };
 
 void rUpdate(inout Reservoir r, int idx, float w, inout uint rng) {
@@ -61,26 +66,44 @@ void rUpdateNoM(inout Reservoir r, int idx, float w, inout uint rng) {
 
 Reservoir readResAt(uint pixIdx, bool fromA) {
     Reservoir r;
+    uint b = pixIdx * 8u;
     if (fromA) {
-        r.lightIdx = resA.d[pixIdx*4 + 0];
-        r.wsum     = intBitsToFloat(resA.d[pixIdx*4 + 1]);
-        r.M        = resA.d[pixIdx*4 + 2];
+        r.lightIdx = resA.d[b+0];
+        r.wsum     = intBitsToFloat(resA.d[b+1]);
+        r.M        = resA.d[b+2];
+        r.normal   = vec3(intBitsToFloat(resA.d[b+4]),
+                          intBitsToFloat(resA.d[b+5]),
+                          intBitsToFloat(resA.d[b+6]));
+        r.depth    = intBitsToFloat(resA.d[b+7]);
     } else {
-        r.lightIdx = resB.d[pixIdx*4 + 0];
-        r.wsum     = intBitsToFloat(resB.d[pixIdx*4 + 1]);
-        r.M        = resB.d[pixIdx*4 + 2];
+        r.lightIdx = resB.d[b+0];
+        r.wsum     = intBitsToFloat(resB.d[b+1]);
+        r.M        = resB.d[b+2];
+        r.normal   = vec3(intBitsToFloat(resB.d[b+4]),
+                          intBitsToFloat(resB.d[b+5]),
+                          intBitsToFloat(resB.d[b+6]));
+        r.depth    = intBitsToFloat(resB.d[b+7]);
     }
     return r;
 }
 void writeResAt(uint pixIdx, Reservoir r, bool toA) {
+    uint b = pixIdx * 8u;
     if (toA) {
-        resA.d[pixIdx*4 + 0] = r.lightIdx;
-        resA.d[pixIdx*4 + 1] = floatBitsToInt(r.wsum);
-        resA.d[pixIdx*4 + 2] = r.M;
+        resA.d[b+0] = r.lightIdx;
+        resA.d[b+1] = floatBitsToInt(r.wsum);
+        resA.d[b+2] = r.M;
+        resA.d[b+4] = floatBitsToInt(r.normal.x);
+        resA.d[b+5] = floatBitsToInt(r.normal.y);
+        resA.d[b+6] = floatBitsToInt(r.normal.z);
+        resA.d[b+7] = floatBitsToInt(r.depth);
     } else {
-        resB.d[pixIdx*4 + 0] = r.lightIdx;
-        resB.d[pixIdx*4 + 1] = floatBitsToInt(r.wsum);
-        resB.d[pixIdx*4 + 2] = r.M;
+        resB.d[b+0] = r.lightIdx;
+        resB.d[b+1] = floatBitsToInt(r.wsum);
+        resB.d[b+2] = r.M;
+        resB.d[b+4] = floatBitsToInt(r.normal.x);
+        resB.d[b+5] = floatBitsToInt(r.normal.y);
+        resB.d[b+6] = floatBitsToInt(r.normal.z);
+        resB.d[b+7] = floatBitsToInt(r.depth);
     }
 }
 
@@ -93,6 +116,11 @@ float pHatForSample(int idx, vec3 hitPos, vec3 N) {
     vec3  L   = toL / max(d, 1e-6);
     float NdL = max(dot(N, L), 0.0);
     return NdL * intensity / (d * d);
+}
+
+bool similarSurface(vec3 nA, float dA, vec3 nB, float dB) {
+    return dot(nA, nB) > 0.97              // ~14° threshold
+        && abs(dA - dB) <= max(dA, dB) * 0.02;
 }
 
 void main()
@@ -126,7 +154,8 @@ void main()
     vec3 B = normalize(objToWorld3 * bitangentObj);
     if (dot(N, gl_WorldRayDirectionEXT) > 0.0) { N = -N; T = -T; B = -B; }
 
-    const vec3 hitWorld = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * gl_HitTEXT;
+    const vec3  hitWorld = gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * gl_HitTEXT;
+    const float hitDepth = gl_HitTEXT;
     const float bw = 1.0 - attribs.x - attribs.y;
     const vec2  uv = uv0*bw + uv1*attribs.x + uv2*attribs.y;
 
@@ -144,22 +173,20 @@ void main()
         shadingN = normalize(T * nmap.x + B * nmap.y + N * nmap.z);
     }
 
-    // CPU side ORs in 0x40000000 to keep bit pattern in normal-float range
-    // (avoids GPU FTZ on small denormal uints). Mask back here.
     const uint frameId   = floatBitsToUint(cam.misc.x) & 0x3FFFFFFFu;
     const uint numLights = floatBitsToUint(cam.misc.y) & 0x3FFFFFFFu;
     uint rng = wangHash(uint(gl_LaunchIDEXT.x) * 1973u
                       + uint(gl_LaunchIDEXT.y) * 9277u
                       + frameId * 26699u);
 
-    // Ping-pong: this frame reads from `readA`, writes to the opposite.
     const bool readA = (frameId & 1u) == 0u;
 
-    // ---- Initial RIS over M=16 candidates ----
     Reservoir r;
     r.lightIdx = -1;
     r.wsum     = 0.0;
     r.M        = 0;
+    r.normal   = N;
+    r.depth    = hitDepth;
     const int kCandidateCount = 16;
     for (int s = 0; s < kCandidateCount; ++s) {
         int idx = clamp(int(frand(rng) * float(numLights)), 0, int(numLights) - 1);
@@ -169,7 +196,7 @@ void main()
 
     const int kMaxM = 20;
 
-    // ---- Temporal reuse: same pixel from prev frame ----
+    // Temporal reuse — same pixel, gated by surface similarity.
     const ivec2 launchID   = ivec2(gl_LaunchIDEXT.xy);
     const ivec2 launchSize = ivec2(gl_LaunchSizeEXT.xy);
     const uint  pixIdx     = uint(launchID.y) * uint(launchSize.x) + uint(launchID.x);
@@ -180,6 +207,7 @@ void main()
             prev.M     = kMaxM;
         }
         if (prev.M > 0 && prev.lightIdx >= 0 && uint(prev.lightIdx) < numLights
+            && similarSurface(prev.normal, prev.depth, N, hitDepth)
             && pHatForSample(prev.lightIdx, hitWorld, shadingN) > 0.0)
         {
             int origM = r.M;
@@ -188,13 +216,33 @@ void main()
         }
     }
 
-    // ---- Spatial reuse — DISABLED temporarily ----
-    // The biased version (just merging neighbor wsums without pHat ratio
-    // reweight) over/under-weights samples whose neighbor pHat differs
-    // from current pHat, producing block-shaped flicker. Will re-enable
-    // once a geometric similarity gate (normal/depth) is in place.
+    // Spatial reuse — 3 close-range neighbor taps, only when surface matches.
+    const ivec2 spatialOffsets[3] = ivec2[3](
+        ivec2(-2,  0),
+        ivec2( 2,  0),
+        ivec2( 0,  2)
+    );
+    for (int t = 0; t < 3; ++t) {
+        ivec2 nl = launchID + spatialOffsets[t];
+        if (nl.x < 0 || nl.y < 0 || nl.x >= launchSize.x || nl.y >= launchSize.y) continue;
+        uint nPixIdx = uint(nl.y) * uint(launchSize.x) + uint(nl.x);
 
-    // ---- Final shading on the surviving sample ----
+        Reservoir nr = readResAt(nPixIdx, readA);
+        if (nr.M > kMaxM) {
+            nr.wsum *= float(kMaxM) / float(nr.M);
+            nr.M     = kMaxM;
+        }
+        if (nr.M > 0 && nr.lightIdx >= 0 && uint(nr.lightIdx) < numLights
+            && similarSurface(nr.normal, nr.depth, N, hitDepth)
+            && pHatForSample(nr.lightIdx, hitWorld, shadingN) > 0.0)
+        {
+            int origM = r.M;
+            rUpdateNoM(r, nr.lightIdx, nr.wsum, rng);
+            r.M = origM + nr.M;
+        }
+    }
+
+    // Final shading on the surviving sample.
     vec3 lightContrib = vec3(0.0);
     if (r.lightIdx >= 0 && r.M > 0) {
         int   idx       = r.lightIdx;
@@ -224,6 +272,10 @@ void main()
         }
     }
 
+    // Update reservoir's stored surface to current pixel's normal/depth so
+    // next frame's similarity test compares against THIS frame's surface.
+    r.normal = N;
+    r.depth  = hitDepth;
     writeResAt(pixIdx, r, !readA);
 
     const vec3  skyColor    = vec3(0.50, 0.65, 0.85);
