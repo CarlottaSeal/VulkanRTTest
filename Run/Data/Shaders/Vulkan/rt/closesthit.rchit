@@ -20,9 +20,10 @@ layout(set = 0, binding = 9)  readonly buffer UVCoords     { float uv[]; } uvbuf
 layout(set = 0, binding = 10) readonly buffer UVIdx        { uint  i[]; }  uvidx;
 layout(set = 0, binding = 11) readonly buffer MatNormalSlot{ int   s[]; }  matnslot;
 layout(set = 0, binding = 12) readonly buffer Lights       { vec4  d[]; }  lbuf;
-// Reservoir slot is 8 ints (32B):
+// Reservoir slot is 12 ints (48B):
 // [0]=lightIdx, [1]=wsum bits, [2]=M, [3]=pad,
-// [4..6]=normal.xyz bits, [7]=depth bits.
+// [4..6]=normal.xyz bits, [7]=depth bits,
+// [8..10]=hitWorld.xyz bits, [11]=pad.
 layout(set = 0, binding = 13) buffer Reservoirs0           { int   d[]; }  resA;
 layout(set = 0, binding = 14) buffer Reservoirs1           { int   d[]; }  resB;
 
@@ -50,6 +51,7 @@ struct Reservoir {
     int   M;
     vec3  normal;
     float depth;
+    vec3  hitWorld;     // origin pixel's surface position — for unbiased MIS
 };
 
 void rUpdate(inout Reservoir r, int idx, float w, inout uint rng) {
@@ -66,7 +68,7 @@ void rUpdateNoM(inout Reservoir r, int idx, float w, inout uint rng) {
 
 Reservoir readResAt(uint pixIdx, bool fromA) {
     Reservoir r;
-    uint b = pixIdx * 8u;
+    uint b = pixIdx * 12u;
     if (fromA) {
         r.lightIdx = resA.d[b+0];
         r.wsum     = intBitsToFloat(resA.d[b+1]);
@@ -75,6 +77,9 @@ Reservoir readResAt(uint pixIdx, bool fromA) {
                           intBitsToFloat(resA.d[b+5]),
                           intBitsToFloat(resA.d[b+6]));
         r.depth    = intBitsToFloat(resA.d[b+7]);
+        r.hitWorld = vec3(intBitsToFloat(resA.d[b+8]),
+                          intBitsToFloat(resA.d[b+9]),
+                          intBitsToFloat(resA.d[b+10]));
     } else {
         r.lightIdx = resB.d[b+0];
         r.wsum     = intBitsToFloat(resB.d[b+1]);
@@ -83,27 +88,36 @@ Reservoir readResAt(uint pixIdx, bool fromA) {
                           intBitsToFloat(resB.d[b+5]),
                           intBitsToFloat(resB.d[b+6]));
         r.depth    = intBitsToFloat(resB.d[b+7]);
+        r.hitWorld = vec3(intBitsToFloat(resB.d[b+8]),
+                          intBitsToFloat(resB.d[b+9]),
+                          intBitsToFloat(resB.d[b+10]));
     }
     return r;
 }
 void writeResAt(uint pixIdx, Reservoir r, bool toA) {
-    uint b = pixIdx * 8u;
+    uint b = pixIdx * 12u;
     if (toA) {
-        resA.d[b+0] = r.lightIdx;
-        resA.d[b+1] = floatBitsToInt(r.wsum);
-        resA.d[b+2] = r.M;
-        resA.d[b+4] = floatBitsToInt(r.normal.x);
-        resA.d[b+5] = floatBitsToInt(r.normal.y);
-        resA.d[b+6] = floatBitsToInt(r.normal.z);
-        resA.d[b+7] = floatBitsToInt(r.depth);
+        resA.d[b+0]  = r.lightIdx;
+        resA.d[b+1]  = floatBitsToInt(r.wsum);
+        resA.d[b+2]  = r.M;
+        resA.d[b+4]  = floatBitsToInt(r.normal.x);
+        resA.d[b+5]  = floatBitsToInt(r.normal.y);
+        resA.d[b+6]  = floatBitsToInt(r.normal.z);
+        resA.d[b+7]  = floatBitsToInt(r.depth);
+        resA.d[b+8]  = floatBitsToInt(r.hitWorld.x);
+        resA.d[b+9]  = floatBitsToInt(r.hitWorld.y);
+        resA.d[b+10] = floatBitsToInt(r.hitWorld.z);
     } else {
-        resB.d[b+0] = r.lightIdx;
-        resB.d[b+1] = floatBitsToInt(r.wsum);
-        resB.d[b+2] = r.M;
-        resB.d[b+4] = floatBitsToInt(r.normal.x);
-        resB.d[b+5] = floatBitsToInt(r.normal.y);
-        resB.d[b+6] = floatBitsToInt(r.normal.z);
-        resB.d[b+7] = floatBitsToInt(r.depth);
+        resB.d[b+0]  = r.lightIdx;
+        resB.d[b+1]  = floatBitsToInt(r.wsum);
+        resB.d[b+2]  = r.M;
+        resB.d[b+4]  = floatBitsToInt(r.normal.x);
+        resB.d[b+5]  = floatBitsToInt(r.normal.y);
+        resB.d[b+6]  = floatBitsToInt(r.normal.z);
+        resB.d[b+7]  = floatBitsToInt(r.depth);
+        resB.d[b+8]  = floatBitsToInt(r.hitWorld.x);
+        resB.d[b+9]  = floatBitsToInt(r.hitWorld.y);
+        resB.d[b+10] = floatBitsToInt(r.hitWorld.z);
     }
 }
 
@@ -187,6 +201,7 @@ void main()
     r.M        = 0;
     r.normal   = N;
     r.depth    = hitDepth;
+    r.hitWorld = hitWorld;
     const int kCandidateCount = 16;
     for (int s = 0; s < kCandidateCount; ++s) {
         int idx = clamp(int(frand(rng) * float(numLights)), 0, int(numLights) - 1);
@@ -232,14 +247,20 @@ void main()
             nr.wsum *= float(kMaxM) / float(nr.M);
             nr.M     = kMaxM;
         }
-        if (nr.M > 0 && nr.lightIdx >= 0 && uint(nr.lightIdx) < numLights
-            && similarSurface(nr.normal, nr.depth, N, hitDepth)
-            && pHatForSample(nr.lightIdx, hitWorld, shadingN) > 0.0)
-        {
-            int origM = r.M;
-            rUpdateNoM(r, nr.lightIdx, nr.wsum, rng);
-            r.M = origM + nr.M;
-        }
+        if (nr.M <= 0 || nr.lightIdx < 0 || uint(nr.lightIdx) >= numLights) continue;
+        if (!similarSurface(nr.normal, nr.depth, N, hitDepth)) continue;
+
+        // Unbiased MIS reweight: weight to add = pHat_curr * W_origin * M_origin
+        //                                      = pHat_curr * wsum / pHat_origin.
+        // pHat_origin is evaluated at the neighbor's surface for nr.lightIdx.
+        float pHat_curr   = pHatForSample(nr.lightIdx, hitWorld,    shadingN);
+        float pHat_origin = pHatForSample(nr.lightIdx, nr.hitWorld, nr.normal);
+        if (pHat_curr <= 0.0 || pHat_origin <= 0.0) continue;
+
+        float weight = nr.wsum * (pHat_curr / pHat_origin);
+        int origM = r.M;
+        rUpdateNoM(r, nr.lightIdx, weight, rng);
+        r.M = origM + nr.M;
     }
 
     // Final shading on the surviving sample.
@@ -272,10 +293,11 @@ void main()
         }
     }
 
-    // Update reservoir's stored surface to current pixel's normal/depth so
-    // next frame's similarity test compares against THIS frame's surface.
-    r.normal = N;
-    r.depth  = hitDepth;
+    // Stamp current pixel's surface into the reservoir so next frame's
+    // similarity gate / unbiased MIS evaluates against THIS frame's data.
+    r.normal   = N;
+    r.depth    = hitDepth;
+    r.hitWorld = hitWorld;
     writeResAt(pixIdx, r, !readA);
 
     const vec3  skyColor    = vec3(0.50, 0.65, 0.85);
