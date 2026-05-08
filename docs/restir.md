@@ -63,7 +63,16 @@ extent for temporal, or two storage buffers indexed by `pixelIdx`.
 | 4 | PARTIAL | Second reservoir buffer + biased spatial reuse re-enabled with similarity gate (step 5). Without proper MIS reweighting the patches are smaller but still visible. |
 | 6 | DONE  | Output TAA: rgba16f history image at binding 15. Raygen blends 0.1·new + 0.9·history per frame, Reinhard tone-maps the HDR result before the rgba8 swap blit. Per-frame fireflies clamped to 4.0 before TAA. FTZ fix on frameId via 0x40000000 OR-bias / 0x3FFFFFFF mask — without this the bit-reinterpreted small uint gets flushed to zero by the GPU, killing the per-frame RNG variance and the (frameId == 0) branch. |
 | 5 | DONE  | Reservoir grew to 32B with world-space normal + depth (`gl_HitTEXT`). Temporal + spatial merges gated by `dot(N1,N2) > 0.97` (~14°) and `\|d1-d2\|/max < 2%`. Spatial taps reduced from 5 to 3 close-range neighbors. |
-| 7 | NEXT  | Unbiased MIS reweight OR output A-Trous / SVGF denoiser. The biased reservoir merge is the source of remaining low-freq color blotches — ReSTIR DI alone at 1-spp, even with similarity gating, leans on a downstream denoiser in production. |
+| 7 (C) | DONE | Unbiased MIS for spatial reuse: reservoir grew to 48B holding hitWorld; spatial weight = pHat_curr / pHat_origin × wsum_neighbor. Temporal merge stays on the static-pixel approximation (pHat_curr ≈ pHat_origin). |
+| 8 (B) | DONE | Single-pass 5×5 edge-aware A-Trous in raygen post-TAA. Weights: pow(dot(N1,N2), 8) × exp(-Δd/d × 8). Reads neighbor normals/depth from the PING reservoir buffer (closesthit's read side, fully committed prior frame). |
+
+## Remaining work (tomorrow)
+
+Production-quality denoising would add:
+- **Motion vectors / reprojection** so TAA + filter stop using stale prev-frame guidance when the camera rotates (currently visible as ghosting trails on geometry edges).
+- **Multi-pass A-Trous** with strides 1, 2, 4, 8, 16 for ~32-pixel effective radius (kills residual low-frequency noise the single-pass 5×5 misses).
+- **Variance estimation (SVGF-style)**: per-pixel running variance on the noisy signal, modulate filter strength so high-variance regions get more aggressive blur and low-variance regions stay sharp.
+- **Optional**: split direct-lighting from albedo so the filter blurs only the noisy lighting term, preserving texture detail.
 | 4 | TODO  | Spatial reuse: 5-tap neighborhood RIS-merge over current reservoirs |
 | 5 | TODO  | Bias correction: similarity test (depth, normal) before accepting reuse |
 | 6 | TODO  | Split into separate passes (rgen → spatial → shading) |

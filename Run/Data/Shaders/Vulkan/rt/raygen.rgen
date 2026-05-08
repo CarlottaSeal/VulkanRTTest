@@ -5,16 +5,37 @@ layout(set = 0, binding = 0, rgba8)    uniform image2D outImage;
 layout(set = 0, binding = 1) uniform accelerationStructureEXT topLevelAS;
 
 layout(set = 0, binding = 2) uniform CameraUBO {
-    vec4 eye_aspect;       // xyz = eye, w = aspect
-    vec4 forward_fovTan;   // xyz = forward, w = tan(V-FOV/2)
-    vec4 right_pad;        // xyz = right
-    vec4 up_pad;           // xyz = up
-    vec4 misc;             // x = frameId, y = numLights
+    vec4 eye_aspect;
+    vec4 forward_fovTan;
+    vec4 right_pad;
+    vec4 up_pad;
+    vec4 misc;
 } cam;
+
+// Reservoirs ping-pong from closesthit. Raygen reads the same buffer
+// closesthit reads (PING) — that side has the previous frame's fully
+// committed normals/depths, no race with this frame's writes to PONG.
+layout(set = 0, binding = 13) buffer Reservoirs0 { int d[]; } resA;
+layout(set = 0, binding = 14) buffer Reservoirs1 { int d[]; } resB;
 
 layout(set = 0, binding = 15, rgba16f) uniform image2D historyImage;
 
 layout(location = 0) rayPayloadEXT vec3 payloadColor;
+
+vec3 readResNormal(uint pixIdx, bool fromA) {
+    uint b = pixIdx * 12u;
+    if (fromA)
+        return vec3(intBitsToFloat(resA.d[b+4]),
+                    intBitsToFloat(resA.d[b+5]),
+                    intBitsToFloat(resA.d[b+6]));
+    return vec3(intBitsToFloat(resB.d[b+4]),
+                intBitsToFloat(resB.d[b+5]),
+                intBitsToFloat(resB.d[b+6]));
+}
+float readResDepth(uint pixIdx, bool fromA) {
+    uint b = pixIdx * 12u;
+    return intBitsToFloat(fromA ? resA.d[b+7] : resB.d[b+7]);
+}
 
 void main()
 {
@@ -36,17 +57,47 @@ void main()
                 0, 0, 0,
                 eye, 0.001, dir, 10000.0, 0);
 
-    // Per-frame fireflies clamp into rgba8 — but TAA history is rgba16f
-    // and averages the un-clamped values. Squash extreme magnitudes before
-    // accumulating so a single bright sample doesn't lock history high.
     payloadColor = min(payloadColor, vec3(4.0));
 
-    const ivec2 px = ivec2(gl_LaunchIDEXT.xy);
+    const ivec2 launchID   = ivec2(gl_LaunchIDEXT.xy);
+    const ivec2 launchSize = ivec2(gl_LaunchSizeEXT.xy);
+    const ivec2 px         = launchID;
+    const uint  pixIdx     = uint(launchID.y) * uint(launchSize.x) + uint(launchID.x);
+
+    // TAA accumulation (history stays un-filtered).
     vec3 historyColor = imageLoad(historyImage, px).rgb;
     const float alpha = 0.1;
     vec3 result = mix(historyColor, payloadColor, alpha);
-
     imageStore(historyImage, px, vec4(result, 1.0));
-    vec3 ldr = result / (result + 1.0);
+
+    // Edge-aware 5x5 spatial filter for output. Reservoir PING side has
+    // last frame's normals/depths — close enough as guidance signal.
+    const uint frameId = floatBitsToUint(cam.misc.x) & 0x3FFFFFFFu;
+    const bool readA   = (frameId & 1u) == 0u;
+    const vec3  selfN  = readResNormal(pixIdx, readA);
+    const float selfD  = readResDepth (pixIdx, readA);
+
+    vec3  sum  = vec3(0.0);
+    float wsum = 0.0;
+    for (int dy = -2; dy <= 2; ++dy) {
+        for (int dx = -2; dx <= 2; ++dx) {
+            ivec2 npx = px + ivec2(dx, dy);
+            if (npx.x < 0 || npx.y < 0 || npx.x >= launchSize.x || npx.y >= launchSize.y) continue;
+            uint  nIdx = uint(npx.y) * uint(launchSize.x) + uint(npx.x);
+            vec3  nN   = readResNormal(nIdx, readA);
+            float nD   = readResDepth (nIdx, readA);
+
+            float wN = pow(max(dot(selfN, nN), 0.0), 8.0);
+            float wD = exp(-abs(selfD - nD) / max(selfD, 0.01) * 8.0);
+            float w  = (dx == 0 && dy == 0) ? 1.0 : (wN * wD);
+
+            vec3 nC = imageLoad(historyImage, npx).rgb;
+            sum  += w * nC;
+            wsum += w;
+        }
+    }
+    vec3 filtered = (wsum > 0.0) ? (sum / wsum) : result;
+
+    vec3 ldr = filtered / (filtered + 1.0);
     imageStore(outImage, px, vec4(ldr, 1.0));
 }
