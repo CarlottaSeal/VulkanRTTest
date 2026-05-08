@@ -75,6 +75,17 @@ void main()
 
     payloadColor = min(payloadColor, vec3(4.0));
 
+    const ivec2 px2 = launchID;
+    vec4 albedoRGBA = imageLoad(albedoImage, px2);
+    if (albedoRGBA.a < 0.5) {
+        // Sky pixel — closesthit didn't fire so reservoir / TAA reprojection
+        // would use stale hit data. Write sky color straight through.
+        vec3 ldrSky = payloadColor / (payloadColor + 1.0);
+        imageStore(outImage,     px2, vec4(ldrSky, 1.0));
+        imageStore(historyImage, px2, vec4(payloadColor, 1.0));
+        return;
+    }
+
     const uint pixIdx = uint(launchID.y) * uint(launchSize.x) + uint(launchID.x);
     const uint frameId = floatBitsToUint(cam.misc.x) & 0x3FFFFFFFu;
     const bool readA   = (frameId & 1u) == 0u;
@@ -132,9 +143,12 @@ void main()
     vec3 result = mix(reprojColor, payloadColor, alpha);
     imageStore(historyImage, px, vec4(result, 1.0));
 
-    // Edge-aware 5x5 spatial filter on the TAA history (light-only after demod).
-    vec3  sum  = vec3(0.0);
-    float wsum = 0.0;
+    // Edge-aware 5x5 spatial filter (normal + depth + luminance gates).
+    // Luminance gate keeps shadow boundaries crisp on the same surface.
+    vec3  selfC = imageLoad(historyImage, px).rgb;
+    float selfL = dot(selfC, vec3(0.299, 0.587, 0.114));
+    vec3  sum   = vec3(0.0);
+    float wsum  = 0.0;
     for (int dy = -2; dy <= 2; ++dy) {
         for (int dx = -2; dx <= 2; ++dx) {
             ivec2 npx = px + ivec2(dx, dy);
@@ -142,12 +156,14 @@ void main()
             uint  nIdx = uint(npx.y) * uint(launchSize.x) + uint(npx.x);
             vec3  nN   = readResNormal(nIdx, readA);
             float nD   = readResDepth (nIdx, readA);
+            vec3  nC   = imageLoad(historyImage, npx).rgb;
+            float nL   = dot(nC, vec3(0.299, 0.587, 0.114));
 
             float wN = pow(max(dot(selfN, nN), 0.0), 8.0);
             float wD = exp(-abs(selfD - nD) / max(selfD, 0.01) * 8.0);
-            float w  = (dx == 0 && dy == 0) ? 1.0 : (wN * wD);
+            float wL = exp(-abs(selfL - nL) * 4.0);
+            float w  = (dx == 0 && dy == 0) ? 1.0 : (wN * wD * wL);
 
-            vec3 nC = imageLoad(historyImage, npx).rgb;
             sum  += w * nC;
             wsum += w;
         }

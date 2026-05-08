@@ -308,8 +308,8 @@ void main()
     const float upDot       = clamp(shadingN.z * 0.5 + 0.5, 0.0, 1.0);
     const vec3  ambient     = mix(groundColor, skyColor, upDot) * 0.25;
 
-    // Stash albedo for raygen's final composite. Lighting (no albedo) goes
-    // through the noisy/filtered path.
+    // Stash albedo for raygen's final composite (alpha=1 marks "real surface"
+    // so raygen knows to blend; miss writes alpha=0 for sky).
     imageStore(albedoImage, ivec2(gl_LaunchIDEXT.xy), vec4(baseColor, 1.0));
     payloadColor = ambient + lightContrib;
 }
