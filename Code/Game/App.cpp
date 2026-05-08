@@ -112,8 +112,9 @@ void App::Startup()
 		IntVec2 winDim = g_theWindow->GetClientDimensions();
 		g_theRTPath->RecreateOutput((uint32_t)winDim.x, (uint32_t)winDim.y);
 
-		// Parse sponza.mtl for newmtl + map_Kd.
-		std::map<std::string, std::string> matToTexPath;
+		// Parse sponza.mtl for newmtl + map_Kd + map_bump.
+		std::map<std::string, std::string> matToDiffusePath;
+		std::map<std::string, std::string> matToNormalPath;
 		{
 			FILE* fp = nullptr;
 			fopen_s(&fp, "Data/Models/Sponza/sponza.mtl", "r");
@@ -137,7 +138,14 @@ void App::Startup()
 					{
 						std::string p(line + 7);
 						strip(p);
-						matToTexPath[current] = "Data/Models/Sponza/" + p;
+						matToDiffusePath[current] = "Data/Models/Sponza/" + p;
+					}
+					else if ((strncmp(line, "map_bump ", 9) == 0 || strncmp(line, "bump ", 5) == 0) && !current.empty())
+					{
+						const char* start = (line[0] == 'b') ? line + 5 : line + 9;
+						std::string p(start);
+						strip(p);
+						matToNormalPath[current] = "Data/Models/Sponza/" + p;
 					}
 				}
 				fclose(fp);
@@ -237,23 +245,26 @@ void App::Startup()
 			fclose(fp);
 		}
 
-		// Build a unique-texture-path list and per-material slot map.
+		// Build a unique-texture-path list. Both diffuse and normal maps
+		// share the same bindless array; per-material slot tables index in.
 		std::vector<std::string> uniqueTexPaths;
 		std::map<std::string, uint32_t> texPathToSlot;
-		std::vector<int32_t> matTexSlot(matNames.size(), -1);
+		std::vector<int32_t> matDiffuseSlot(matNames.size(), -1);
+		std::vector<int32_t> matNormalSlot (matNames.size(), -1);
+		auto registerTex = [&](const std::string& path) -> int32_t {
+			auto it = texPathToSlot.find(path);
+			if (it != texPathToSlot.end()) return (int32_t)it->second;
+			if (uniqueTexPaths.size() >= VulkanRTPath::kMaxRTTextures) return -1;
+			int32_t slot = (int32_t)uniqueTexPaths.size();
+			texPathToSlot[path] = (uint32_t)slot;
+			uniqueTexPaths.push_back(path);
+			return slot;
+		};
 		for (size_t m = 0; m < matNames.size(); ++m) {
-			auto it = matToTexPath.find(matNames[m]);
-			if (it == matToTexPath.end()) continue;
-			auto sit = texPathToSlot.find(it->second);
-			if (sit == texPathToSlot.end()) {
-				if (uniqueTexPaths.size() >= VulkanRTPath::kMaxRTTextures) continue;
-				uint32_t slot = (uint32_t)uniqueTexPaths.size();
-				texPathToSlot[it->second] = slot;
-				uniqueTexPaths.push_back(it->second);
-				matTexSlot[m] = (int32_t)slot;
-			} else {
-				matTexSlot[m] = (int32_t)sit->second;
-			}
+			auto dit = matToDiffusePath.find(matNames[m]);
+			if (dit != matToDiffusePath.end()) matDiffuseSlot[m] = registerTex(dit->second);
+			auto nit = matToNormalPath.find(matNames[m]);
+			if (nit != matToNormalPath.end()) matNormalSlot[m]  = registerTex(nit->second);
 		}
 
 		static VulkanBLAS s_sponzaBLAS;
@@ -270,7 +281,9 @@ void App::Startup()
 			objUVIndices.data(), (uint32_t)triMatIds.size());
 
 		g_theRTPath->SetTextures(uniqueTexPaths,
-		                        matTexSlot.data(), (uint32_t)matTexSlot.size());
+		                         matDiffuseSlot.data(),
+		                         matNormalSlot.data(),
+		                         (uint32_t)matDiffuseSlot.size());
 
 		// Crytek OBJ axes (Y-up, +X-right, +Z-toward-viewer) → engine
 		// (X-fwd, Y-left, Z-up), uniform 0.01 scale.
