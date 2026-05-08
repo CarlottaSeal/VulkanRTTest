@@ -66,13 +66,15 @@ extent for temporal, or two storage buffers indexed by `pixelIdx`.
 | 7 (C) | DONE | Unbiased MIS for spatial reuse: reservoir grew to 48B holding hitWorld; spatial weight = pHat_curr / pHat_origin × wsum_neighbor. Temporal merge stays on the static-pixel approximation (pHat_curr ≈ pHat_origin). |
 | 8 (B) | DONE | Single-pass 5×5 edge-aware A-Trous in raygen post-TAA. Weights: pow(dot(N1,N2), 8) × exp(-Δd/d × 8). Reads neighbor normals/depth from the PING reservoir buffer (closesthit's read side, fully committed prior frame). |
 
-## Remaining work (tomorrow)
+| 9 | DONE  | Motion-vector reprojection: prev-frame camera cached in UBO; raygen projects current hitWorld through prev camera basis to find prev-frame screen coord. Surface match check (`dot(N) > 0.95` + `Δhit/dist < 5%`) gates whether to use the reprojected history pixel; if rejected, alpha = 1.0 (no history). Eliminates the bulk of camera-rotation ghosting. |
+| 10 | DONE | Albedo demodulation: closesthit writes baseColor to a separate G-buffer (binding 16, rgba8); payload carries un-modulated lighting only. Raygen multiplies albedo back after the spatial filter, so texture detail isn't blurred. |
 
-Production-quality denoising would add:
-- **Motion vectors / reprojection** so TAA + filter stop using stale prev-frame guidance when the camera rotates (currently visible as ghosting trails on geometry edges).
-- **Multi-pass A-Trous** with strides 1, 2, 4, 8, 16 for ~32-pixel effective radius (kills residual low-frequency noise the single-pass 5×5 misses).
-- **Variance estimation (SVGF-style)**: per-pixel running variance on the noisy signal, modulate filter strength so high-variance regions get more aggressive blur and low-variance regions stay sharp.
-- **Optional**: split direct-lighting from albedo so the filter blurs only the noisy lighting term, preserving texture detail.
+## Remaining work
+
+The single-pass 5×5 spatial filter only covers ~5-pixel low-frequency noise; the residual blotches are wider. Production-quality denoising next:
+- **Multi-pass A-Trous** (strides 1, 2, 4, 8, 16) needs a compute pipeline + ping-pong storage images + barriers between passes — ~200 LOC.
+- **SVGF**: variance estimation + variance-adaptive filter strength + temporal-spatial joint variance refinement. Significant — ~400 LOC.
+- **Tighter reprojection**: tracking prev-frame view-proj matrix instead of basis; bilinear sample of prev history; depth-bounded surface match.
 | 4 | TODO  | Spatial reuse: 5-tap neighborhood RIS-merge over current reservoirs |
 | 5 | TODO  | Bias correction: similarity test (depth, normal) before accepting reuse |
 | 6 | TODO  | Split into separate passes (rgen → spatial → shading) |

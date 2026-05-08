@@ -26,6 +26,7 @@ layout(set = 0, binding = 12) readonly buffer Lights       { vec4  d[]; }  lbuf;
 // [8..10]=hitWorld.xyz bits, [11]=pad.
 layout(set = 0, binding = 13) buffer Reservoirs0           { int   d[]; }  resA;
 layout(set = 0, binding = 14) buffer Reservoirs1           { int   d[]; }  resB;
+layout(set = 0, binding = 16, rgba8) uniform image2D albedoImage;
 
 layout(location = 0) rayPayloadInEXT vec3 payloadColor;
 layout(location = 1) rayPayloadEXT uint shadowed;
@@ -263,7 +264,9 @@ void main()
         r.M = origM + nr.M;
     }
 
-    // Final shading on the surviving sample.
+    // Final shading on the surviving sample. Albedo is demodulated — return
+    // un-modulated lighting and let raygen multiply by albedo after the
+    // spatial filter (preserves texture detail through the blur).
     vec3 lightContrib = vec3(0.0);
     if (r.lightIdx >= 0 && r.M > 0) {
         int   idx       = r.lightIdx;
@@ -289,7 +292,7 @@ void main()
                 0.0, L, d - 0.01, 1
             );
             if (shadowed == 0u)
-                lightContrib = baseColor * NdL * intensity * lcol / (d * d) * W;
+                lightContrib = NdL * intensity * lcol / (d * d) * W;
         }
     }
 
@@ -305,5 +308,8 @@ void main()
     const float upDot       = clamp(shadingN.z * 0.5 + 0.5, 0.0, 1.0);
     const vec3  ambient     = mix(groundColor, skyColor, upDot) * 0.25;
 
-    payloadColor = ambient * baseColor + lightContrib;
+    // Stash albedo for raygen's final composite. Lighting (no albedo) goes
+    // through the noisy/filtered path.
+    imageStore(albedoImage, ivec2(gl_LaunchIDEXT.xy), vec4(baseColor, 1.0));
+    payloadColor = ambient + lightContrib;
 }

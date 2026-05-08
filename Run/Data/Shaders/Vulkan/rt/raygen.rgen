@@ -10,15 +10,17 @@ layout(set = 0, binding = 2) uniform CameraUBO {
     vec4 right_pad;
     vec4 up_pad;
     vec4 misc;
+    vec4 prev_eye_aspect;
+    vec4 prev_forward_fovTan;
+    vec4 prev_right_pad;
+    vec4 prev_up_pad;
 } cam;
 
-// Reservoirs ping-pong from closesthit. Raygen reads the same buffer
-// closesthit reads (PING) — that side has the previous frame's fully
-// committed normals/depths, no race with this frame's writes to PONG.
 layout(set = 0, binding = 13) buffer Reservoirs0 { int d[]; } resA;
 layout(set = 0, binding = 14) buffer Reservoirs1 { int d[]; } resB;
 
 layout(set = 0, binding = 15, rgba16f) uniform image2D historyImage;
+layout(set = 0, binding = 16, rgba8)   uniform image2D albedoImage;
 
 layout(location = 0) rayPayloadEXT vec3 payloadColor;
 
@@ -36,11 +38,25 @@ float readResDepth(uint pixIdx, bool fromA) {
     uint b = pixIdx * 12u;
     return intBitsToFloat(fromA ? resA.d[b+7] : resB.d[b+7]);
 }
+vec3 readResHitWorld(uint pixIdx, bool fromA) {
+    uint b = pixIdx * 12u;
+    if (fromA)
+        return vec3(intBitsToFloat(resA.d[b+8]),
+                    intBitsToFloat(resA.d[b+9]),
+                    intBitsToFloat(resA.d[b+10]));
+    return vec3(intBitsToFloat(resB.d[b+8]),
+                intBitsToFloat(resB.d[b+9]),
+                intBitsToFloat(resB.d[b+10]));
+}
 
 void main()
 {
-    const vec2 pixelCenter = vec2(gl_LaunchIDEXT.xy) + vec2(0.5);
-    const vec2 inUV        = pixelCenter / vec2(gl_LaunchSizeEXT.xy);
+    const ivec2 launchID   = ivec2(gl_LaunchIDEXT.xy);
+    const ivec2 launchSize = ivec2(gl_LaunchSizeEXT.xy);
+    const ivec2 px         = launchID;
+
+    const vec2 pixelCenter = vec2(launchID) + vec2(0.5);
+    const vec2 inUV        = pixelCenter / vec2(launchSize);
     vec2       ndc         = inUV * 2.0 - 1.0;
     ndc.y = -ndc.y;
 
@@ -59,24 +75,64 @@ void main()
 
     payloadColor = min(payloadColor, vec3(4.0));
 
-    const ivec2 launchID   = ivec2(gl_LaunchIDEXT.xy);
-    const ivec2 launchSize = ivec2(gl_LaunchSizeEXT.xy);
-    const ivec2 px         = launchID;
-    const uint  pixIdx     = uint(launchID.y) * uint(launchSize.x) + uint(launchID.x);
-
-    // TAA accumulation (history stays un-filtered).
-    vec3 historyColor = imageLoad(historyImage, px).rgb;
-    const float alpha = 0.1;
-    vec3 result = mix(historyColor, payloadColor, alpha);
-    imageStore(historyImage, px, vec4(result, 1.0));
-
-    // Edge-aware 5x5 spatial filter for output. Reservoir PING side has
-    // last frame's normals/depths — close enough as guidance signal.
+    const uint pixIdx = uint(launchID.y) * uint(launchSize.x) + uint(launchID.x);
     const uint frameId = floatBitsToUint(cam.misc.x) & 0x3FFFFFFFu;
     const bool readA   = (frameId & 1u) == 0u;
-    const vec3  selfN  = readResNormal(pixIdx, readA);
-    const float selfD  = readResDepth (pixIdx, readA);
 
+    // Need this frame's hit data (closesthit just wrote PONG[self_pixIdx]).
+    // PING side has frame N-1's data — used for guidance and reprojection
+    // surface check.
+    const vec3  selfN  = readResNormal  (pixIdx, readA);
+    const float selfD  = readResDepth   (pixIdx, readA);
+    const vec3  hitW   = eye + dir * selfD;   // approximate hit world from prev-frame depth
+
+    // ---- Motion-vector reprojection through prev-frame camera ----
+    vec3 reprojColor = vec3(0.0);
+    bool historyValid = false;
+    {
+        const vec3  pe = cam.prev_eye_aspect.xyz;
+        const float pa = cam.prev_eye_aspect.w;
+        const vec3  pf = cam.prev_forward_fovTan.xyz;
+        const float pt = cam.prev_forward_fovTan.w;
+        const vec3  pr = cam.prev_right_pad.xyz;
+        const vec3  pu = cam.prev_up_pad.xyz;
+
+        // Use the reservoir's stored hitWorld for accurate reprojection
+        // (selfD is along curr ray, but reservoir's hitWorld is a real point).
+        const vec3 storedHitW = readResHitWorld(pixIdx, readA);
+        const vec3 toHit = storedHitW - pe;
+        const float vz   = dot(toHit, pf);
+        if (vz > 0.0) {
+            const float vx = dot(toHit, pr);
+            const float vy = dot(toHit, pu);
+            const float ndcX = vx / (vz * pt * pa);
+            const float ndcY = vy / (vz * pt);
+            const vec2 prevUV = vec2(ndcX * 0.5 + 0.5, -ndcY * 0.5 + 0.5);
+            if (prevUV.x >= 0.0 && prevUV.x <= 1.0 && prevUV.y >= 0.0 && prevUV.y <= 1.0) {
+                const ivec2 prevPx = ivec2(prevUV * vec2(launchSize));
+                if (prevPx.x >= 0 && prevPx.y >= 0 &&
+                    prevPx.x < launchSize.x && prevPx.y < launchSize.y) {
+                    // Surface-match check at reprojected pixel: is the surface
+                    // showing there last frame the same as our current hit?
+                    const uint  prevIdx = uint(prevPx.y) * uint(launchSize.x) + uint(prevPx.x);
+                    const vec3  pN = readResNormal(prevIdx, readA);
+                    const vec3  pHit = readResHitWorld(prevIdx, readA);
+                    if (dot(pN, selfN) > 0.95 &&
+                        length(pHit - storedHitW) < max(length(storedHitW - pe), 1.0) * 0.05)
+                    {
+                        reprojColor  = imageLoad(historyImage, prevPx).rgb;
+                        historyValid = true;
+                    }
+                }
+            }
+        }
+    }
+
+    const float alpha = historyValid ? 0.1 : 1.0;
+    vec3 result = mix(reprojColor, payloadColor, alpha);
+    imageStore(historyImage, px, vec4(result, 1.0));
+
+    // Edge-aware 5x5 spatial filter on the TAA history (light-only after demod).
     vec3  sum  = vec3(0.0);
     float wsum = 0.0;
     for (int dy = -2; dy <= 2; ++dy) {
@@ -96,8 +152,13 @@ void main()
             wsum += w;
         }
     }
-    vec3 filtered = (wsum > 0.0) ? (sum / wsum) : result;
+    vec3 filteredLight = (wsum > 0.0) ? (sum / wsum) : result;
 
-    vec3 ldr = filtered / (filtered + 1.0);
+    // Albedo demodulation: multiply lighting by per-pixel material color
+    // AFTER spatial filtering so texture detail isn't blurred.
+    vec3 albedo = imageLoad(albedoImage, px).rgb;
+    vec3 final  = filteredLight * albedo;
+
+    vec3 ldr = final / (final + 1.0);
     imageStore(outImage, px, vec4(ldr, 1.0));
 }
