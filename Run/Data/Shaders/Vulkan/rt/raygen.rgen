@@ -4,24 +4,21 @@
 layout(set = 0, binding = 0, rgba8) uniform image2D outImage;
 layout(set = 0, binding = 1) uniform accelerationStructureEXT topLevelAS;
 
-// Camera params packed as 4 vec4. Avoids dragging engine matrix
-// conventions through GLSL — caller fills explicit eye + basis from
-// EulerAngles::GetAsVectors_IFwd_JLeft_KUp.
 layout(set = 0, binding = 2) uniform CameraUBO {
-    vec4 eye_aspect;       // xyz = eye world position, w = window aspect (w/h)
-    vec4 forward_fovTan;   // xyz = forward direction (unit), w = tan(half-V-FOV)
-    vec4 right_pad;        // xyz = right direction (unit)
-    vec4 up_pad;           // xyz = up direction (unit)
+    vec4 eye_aspect;       // xyz = eye, w = aspect
+    vec4 forward_fovTan;   // xyz = forward, w = tan(V-FOV/2)
+    vec4 right_pad;        // xyz = right
+    vec4 up_pad;           // xyz = up
 } cam;
 
 layout(location = 0) rayPayloadEXT vec3 payloadColor;
 
 void main()
 {
-    const vec2  pixelCenter = vec2(gl_LaunchIDEXT.xy) + vec2(0.5);
-    const vec2  inUV        = pixelCenter / vec2(gl_LaunchSizeEXT.xy);
-    vec2        ndc         = inUV * 2.0 - 1.0;
-    ndc.y = -ndc.y;     // Vulkan launch IDs are origin-top-left; flip for screen-up = world-up
+    const vec2 pixelCenter = vec2(gl_LaunchIDEXT.xy) + vec2(0.5);
+    const vec2 inUV        = pixelCenter / vec2(gl_LaunchSizeEXT.xy);
+    vec2       ndc         = inUV * 2.0 - 1.0;
+    ndc.y = -ndc.y;
 
     const vec3  eye    = cam.eye_aspect.xyz;
     const float aspect = cam.eye_aspect.w;
@@ -32,14 +29,9 @@ void main()
                                + ndc.y * fovTan          * cam.up_pad.xyz);
 
     payloadColor = vec3(0.0);
-
-    traceRayEXT(
-        topLevelAS, gl_RayFlagsOpaqueEXT, 0xFF,
-        0, 0, 0,
-        eye, 0.001,
-        dir, 10000.0,
-        0
-    );
+    traceRayEXT(topLevelAS, gl_RayFlagsOpaqueEXT, 0xFF,
+                0, 0, 0,
+                eye, 0.001, dir, 10000.0, 0);
 
     imageStore(outImage, ivec2(gl_LaunchIDEXT.xy), vec4(payloadColor, 1.0));
 }

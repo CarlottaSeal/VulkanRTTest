@@ -4,6 +4,9 @@
 #include "Engine/Renderer/VulkanDeferredPath.h"
 #include "Engine/Renderer/VulkanRTPath.h"
 #include "Engine/Renderer/Camera.hpp"
+#include <array>
+#include <map>
+#include <string>
 #include "Engine/Renderer/SimpleTriangleFont.hpp"
 #include "Engine/Input/InputSystem.hpp"
 #include "Engine/Core/Time.hpp"
@@ -98,76 +101,122 @@ void App::Startup()
 	DebugRenderSystemStartup(debugRenderConfig);
 
 #ifdef ENGINE_VULKAN_RENDERER
-	// Bring up the tile-deferred path on top of the (now-stable) Vulkan renderer.
 	g_theDeferred = new VulkanDeferredPath();
 	g_theDeferred->Init(g_theRenderer->GetSubRenderer());
 
-	// ---- Hardware ray-tracing path bring-up ----
-	// Build a single unit cube BLAS, wrap it in a 1-instance TLAS, compile the
-	// raygen / closesthit / miss SPV trio into an RT pipeline, build the SBT,
-	// and hook the descriptor set. After this returns, g_theRTPath is fully
-	// armed and TraceRays + a swapchain blit are the only remaining steps.
 	{
 		VulkanRenderer* vk = g_theRenderer->GetSubRenderer();
 		g_theRTPath = new VulkanRTPath();
 		g_theRTPath->Init(vk);
 
 		IntVec2 winDim = g_theWindow->GetClientDimensions();
-		const uint32_t outW = (uint32_t)winDim.x;
-		const uint32_t outH = (uint32_t)winDim.y;
-		g_theRTPath->RecreateOutput(outW, outH);
+		g_theRTPath->RecreateOutput((uint32_t)winDim.x, (uint32_t)winDim.y);
 
-		// Unit cube centered on origin, side 1, axis-aligned.
-		// Winding doesn't matter for ray-triangle intersection; layout is
-		// 8 vertices × float[3].
-		static const float cubeVerts[8 * 3] = {
-			-0.5f, -0.5f, -0.5f,
-			 0.5f, -0.5f, -0.5f,
-			 0.5f,  0.5f, -0.5f,
-			-0.5f,  0.5f, -0.5f,
-			-0.5f, -0.5f,  0.5f,
-			 0.5f, -0.5f,  0.5f,
-			 0.5f,  0.5f,  0.5f,
-			-0.5f,  0.5f,  0.5f,
-		};
-		static const uint32_t cubeIndices[36] = {
-			0, 1, 2,  0, 2, 3,    // -Z
-			4, 6, 5,  4, 7, 6,    // +Z
-			0, 4, 5,  0, 5, 1,    // -Y
-			3, 2, 6,  3, 6, 7,    // +Y
-			0, 3, 7,  0, 7, 4,    // -X
-			1, 5, 6,  1, 6, 2,    // +X
-		};
-		static VulkanBLAS s_cubeBLAS;
-		s_cubeBLAS = g_theRTPath->BuildBLAS(cubeVerts, 8, cubeIndices, 36);
+		std::vector<float>    objVerts;
+		std::vector<uint32_t> objIndices;
+		std::vector<uint32_t> triMatIds;
+		std::vector<float>    matColorsRGB;
+		std::map<std::string, uint32_t> matNameToId;
+		{
+			FILE* fp = nullptr;
+			fopen_s(&fp, "Data/Models/Sponza/sponza.obj", "r");
+			if (!fp) ERROR_AND_DIE("App::Startup: failed to open Data/Models/Sponza/sponza.obj");
 
-		// Single instance translated +5 down +X (engine convention: x = forward).
-		// Player spawns at (0, 0, 0.5) so cube needs to be in front of them
-		// rather than wrapping the spawn point.
-		// transform is row-major 3x4 = mat3 + translation,
-		// laid out as [r0c0..r0c3, r1c0..r1c3, r2c0..r2c3].
-		VkAccelerationStructureInstanceKHR inst{};
-		inst.transform.matrix[0][0] = 1.f;
-		inst.transform.matrix[1][1] = 1.f;
-		inst.transform.matrix[2][2] = 1.f;
-		inst.transform.matrix[0][3] = 5.f;   // tx
-		inst.instanceCustomIndex                    = 0;
-		inst.mask                                   = 0xFF;
-		inst.instanceShaderBindingTableRecordOffset = 0;
-		inst.flags                                  = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
-		inst.accelerationStructureReference         = s_cubeBLAS.address;
-		std::vector<VkAccelerationStructureInstanceKHR> instances{ inst };
+			// Slot 0 is a fallback for triangles emitted before any usemtl line.
+			uint32_t currentMatId = 0;
+			matColorsRGB.push_back(0.7f); matColorsRGB.push_back(0.7f); matColorsRGB.push_back(0.7f);
+
+			char line[1024];
+			while (fgets(line, sizeof(line), fp))
+			{
+				if (line[0] == 'v' && line[1] == ' ')
+				{
+					float x, y, z;
+					if (sscanf_s(line + 2, "%f %f %f", &x, &y, &z) == 3)
+					{
+						objVerts.push_back(x);
+						objVerts.push_back(y);
+						objVerts.push_back(z);
+					}
+				}
+				else if (line[0] == 'f' && line[1] == ' ')
+				{
+					unsigned int v1, v2, v3;
+					if (sscanf_s(line + 2, "%u/%*u/%*u %u/%*u/%*u %u/%*u/%*u", &v1, &v2, &v3) == 3 ||
+					    sscanf_s(line + 2, "%u//%*u %u//%*u %u//%*u",          &v1, &v2, &v3) == 3 ||
+					    sscanf_s(line + 2, "%u/%*u %u/%*u %u/%*u",             &v1, &v2, &v3) == 3 ||
+					    sscanf_s(line + 2, "%u %u %u",                         &v1, &v2, &v3) == 3)
+					{
+						objIndices.push_back(v1 - 1);
+						objIndices.push_back(v2 - 1);
+						objIndices.push_back(v3 - 1);
+						triMatIds.push_back(currentMatId);
+					}
+				}
+				else if (strncmp(line, "usemtl ", 7) == 0)
+				{
+					std::string name(line + 7);
+					while (!name.empty() && (name.back() == '\r' || name.back() == '\n' ||
+					                         name.back() == ' '  || name.back() == '\t'))
+						name.pop_back();
+					auto it = matNameToId.find(name);
+					if (it == matNameToId.end())
+					{
+						currentMatId = (uint32_t)(matColorsRGB.size() / 3);
+						matNameToId[name] = currentMatId;
+
+						// MTL Kd is uniform gray (color lives in textures we don't load yet);
+						// hash the material name to a distinct palette slot.
+						uint32_t h = 0x811C9DC5u;
+						for (char ch : name) { h ^= (uint8_t)ch; h *= 0x01000193u; }
+						auto chan = [&](uint32_t bits) {
+							float f = (float)((h ^ bits) & 0xFFFFFFu) / (float)0xFFFFFFu;
+							return 0.35f + 0.55f * f;
+						};
+						matColorsRGB.push_back(chan(0xC0FFEE));
+						matColorsRGB.push_back(chan(0xBADF00));
+						matColorsRGB.push_back(chan(0x1337AA));
+					}
+					else
+					{
+						currentMatId = it->second;
+					}
+				}
+			}
+			fclose(fp);
+		}
+
+		static VulkanBLAS s_sponzaBLAS;
+		s_sponzaBLAS = g_theRTPath->BuildBLAS(
+			objVerts.data(), (uint32_t)(objVerts.size() / 3),
+			objIndices.data(), (uint32_t)objIndices.size());
+
+		g_theRTPath->SetMaterialBuffers(
+			matColorsRGB.data(), (uint32_t)(matColorsRGB.size() / 3),
+			triMatIds.data(),    (uint32_t)triMatIds.size());
+
+		// Crytek OBJ axes (Y-up, +X-right, +Z-toward-viewer) → engine
+		// (X-fwd, Y-left, Z-up), uniform 0.01 scale.
+		const float s = 0.01f;
+		VkAccelerationStructureInstanceKHR sponzaInst{};
+		sponzaInst.transform.matrix[0][0] =  s;
+		sponzaInst.transform.matrix[1][2] = -s;
+		sponzaInst.transform.matrix[2][1] =  s;
+		sponzaInst.instanceCustomIndex                    = 0;
+		sponzaInst.mask                                   = 0xFF;
+		sponzaInst.instanceShaderBindingTableRecordOffset = 0;
+		sponzaInst.flags                                  = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+		sponzaInst.accelerationStructureReference         = s_sponzaBLAS.address;
 
 		static VulkanTLAS s_sceneTLAS;
-		s_sceneTLAS = g_theRTPath->BuildTLAS(instances);
+		s_sceneTLAS = g_theRTPath->BuildTLAS({ sponzaInst });
 
-		// SPV paths — Run/ is the cwd by the time we reach Startup (Main_Windows.cpp
-		// does the chdir walk-up).
 		g_theRTPath->CreateRTPipeline("Data/Shaders/Vulkan/rt/raygen.rgen.spv",
 		                              "Data/Shaders/Vulkan/rt/closesthit.rchit.spv",
-		                              "Data/Shaders/Vulkan/rt/miss.rmiss.spv");
+		                              "Data/Shaders/Vulkan/rt/miss.rmiss.spv",
+		                              "Data/Shaders/Vulkan/rt/shadowmiss.rmiss.spv");
 		g_theRTPath->CreateSBT();
-		g_theRTPath->UpdateDescriptors(s_sceneTLAS);
+		g_theRTPath->UpdateDescriptors(s_sceneTLAS, s_sponzaBLAS);
 	}
 #endif
 

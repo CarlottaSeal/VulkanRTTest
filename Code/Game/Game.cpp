@@ -211,10 +211,6 @@ void Game::Render() const
 		VkCommandBuffer cmd = vk->GetCurrentCommandBuffer();
 		uint32_t swapIdx = vk->GetCurrentSwapImageIndex();
 
-		// ---- Hardware ray tracing branch (F5) ----
-		// Bypasses the deferred path entirely: cmd buffer is already open from
-		// VulkanRenderer::BeginFrame, no render pass active. We dispatch
-		// raygen, then blit the storage image into the current swap image.
 		if (m_useRTPath && g_theRTPath)
 		{
 			Vec3 fwd, left, up;
@@ -222,8 +218,8 @@ void Game::Render() const
 			Vec3 right = -1.0f * left;
 			Vec3 eye   = m_player->m_position;
 
-			const float fovTan = 0.577f;   // tan(60deg / 2) — matches Player::m_worldCamera perspective
-			const float aspect = 2.0f;     // window aspect
+			const float fovTan = 0.577f;
+			const float aspect = 2.0f;
 			const float eyeArr[3] = { eye.x,   eye.y,   eye.z   };
 			const float fwdArr[3] = { fwd.x,   fwd.y,   fwd.z   };
 			const float rgtArr[3] = { right.x, right.y, right.z };
@@ -234,7 +230,35 @@ void Game::Render() const
 			const uint32_t w = (uint32_t)winDim.x;
 			const uint32_t h = (uint32_t)winDim.y;
 			g_theRTPath->TraceRays(cmd, w, h);
-			g_theRTPath->BlitToSwapImage(cmd, w, h);
+			g_theRTPath->BlitToSwapImage(cmd, w, h, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+
+			if (g_theDeferred)
+			{
+				char hudBuf[160];
+				snprintf(hudBuf, sizeof(hudBuf),
+				         " RT MODE [F5]   pos: %.1f %.1f %.1f   yaw: %.1f  pitch: %.1f",
+				         m_player->m_position.x, m_player->m_position.y, m_player->m_position.z,
+				         m_player->m_orientation.m_yawDegrees, m_player->m_orientation.m_pitchDegrees);
+				DebugAddScreenText(hudBuf,
+				                   m_screenCamera.GetOrthographicTopRight() - Vec2(580.f, 50.f),
+				                   12.f, Vec2::ZERO, 0.f);
+
+				char fpsBuf[96];
+				snprintf(fpsBuf, sizeof(fpsBuf),
+				         " FPS: %.1f   dt: %.2f ms",
+				         (float)m_gameClock->GetFrameRate(),
+				         (float)m_gameClock->GetDeltaSeconds() * 1000.f);
+				DebugAddScreenText(fpsBuf,
+				                   m_screenCamera.GetOrthographicTopRight() - Vec2(580.f, 70.f),
+				                   12.f, Vec2::ZERO, 0.f);
+
+				g_theDeferred->BeginForwardOverlay(cmd, swapIdx);
+				DebugRenderScreen(m_screenCamera);
+				g_theDevConsole->Render(AABB2(m_screenCamera.GetOrthographicBottomLeft(),
+				                              m_screenCamera.GetOrthographicTopRight()),
+				                        g_theRenderer);
+				g_theDeferred->EndForwardOverlay(cmd);
+			}
 			return;
 		}
 

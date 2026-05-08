@@ -48,3 +48,6 @@ DEFERRED_DEMO.md
 
 # Stale template solution (use VulkanTest.sln)
 Protogame3D.sln
+
+# Sponza assets (~186MB; user fetches from jimmiebergmann/Sponza)
+Run/Data/Models/Sponza/
