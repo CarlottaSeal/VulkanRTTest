@@ -141,12 +141,16 @@ void App::Startup()
 		static VulkanBLAS s_cubeBLAS;
 		s_cubeBLAS = g_theRTPath->BuildBLAS(cubeVerts, 8, cubeIndices, 36);
 
-		// Single instance at identity. transform is row-major 3x4 = mat3 + translation,
+		// Single instance translated +5 down +X (engine convention: x = forward).
+		// Player spawns at (0, 0, 0.5) so cube needs to be in front of them
+		// rather than wrapping the spawn point.
+		// transform is row-major 3x4 = mat3 + translation,
 		// laid out as [r0c0..r0c3, r1c0..r1c3, r2c0..r2c3].
 		VkAccelerationStructureInstanceKHR inst{};
 		inst.transform.matrix[0][0] = 1.f;
 		inst.transform.matrix[1][1] = 1.f;
 		inst.transform.matrix[2][2] = 1.f;
+		inst.transform.matrix[0][3] = 5.f;   // tx
 		inst.instanceCustomIndex                    = 0;
 		inst.mask                                   = 0xFF;
 		inst.instanceShaderBindingTableRecordOffset = 0;

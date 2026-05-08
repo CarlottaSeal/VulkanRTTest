@@ -217,6 +217,19 @@ void Game::Render() const
 		// raygen, then blit the storage image into the current swap image.
 		if (m_useRTPath && g_theRTPath)
 		{
+			Vec3 fwd, left, up;
+			m_player->m_orientation.GetAsVectors_IFwd_JLeft_KUp(fwd, left, up);
+			Vec3 right = -1.0f * left;
+			Vec3 eye   = m_player->m_position;
+
+			const float fovTan = 0.577f;   // tan(60deg / 2) — matches Player::m_worldCamera perspective
+			const float aspect = 2.0f;     // window aspect
+			const float eyeArr[3] = { eye.x,   eye.y,   eye.z   };
+			const float fwdArr[3] = { fwd.x,   fwd.y,   fwd.z   };
+			const float rgtArr[3] = { right.x, right.y, right.z };
+			const float upArr[3]  = { up.x,    up.y,    up.z    };
+			g_theRTPath->UpdateCameraVectors(eyeArr, fwdArr, rgtArr, upArr, fovTan, aspect);
+
 			IntVec2 winDim = g_theWindow->GetClientDimensions();
 			const uint32_t w = (uint32_t)winDim.x;
 			const uint32_t h = (uint32_t)winDim.y;

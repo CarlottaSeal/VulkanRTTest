@@ -1,52 +1,44 @@
 #version 460
 #extension GL_EXT_ray_tracing : require
 
-// Output storage image — raygen writes one color per pixel.
 layout(set = 0, binding = 0, rgba8) uniform image2D outImage;
-// Top-level acceleration structure to trace into.
 layout(set = 0, binding = 1) uniform accelerationStructureEXT topLevelAS;
-// Camera UBO is declared at binding 2 but unused in this first-cut shader —
-// camera params are hardcoded below. Once we wire engine matrices through
-// VulkanRTPath::UpdateCamera, switch to reading viewInverse/projInverse here.
 
-// Payload returned from closest-hit / miss.
+// Camera params packed as 4 vec4. Avoids dragging engine matrix
+// conventions through GLSL — caller fills explicit eye + basis from
+// EulerAngles::GetAsVectors_IFwd_JLeft_KUp.
+layout(set = 0, binding = 2) uniform CameraUBO {
+    vec4 eye_aspect;       // xyz = eye world position, w = window aspect (w/h)
+    vec4 forward_fovTan;   // xyz = forward direction (unit), w = tan(half-V-FOV)
+    vec4 right_pad;        // xyz = right direction (unit)
+    vec4 up_pad;           // xyz = up direction (unit)
+} cam;
+
 layout(location = 0) rayPayloadEXT vec3 payloadColor;
 
 void main()
 {
-    // Hardcoded camera: eye at (0, -3, 1.5) looking at the origin, +Z up,
-    // 60° vertical FOV, 2:1 aspect. The cube sits unit-sized at the origin.
-    const vec3  eye     = vec3(0.0, -3.0, 1.5);
-    const vec3  forward = normalize(vec3(0.0, 1.0, -0.5));
-    const vec3  up      = vec3(0.0, 0.0, 1.0);
-    const vec3  right   = normalize(cross(forward, up));
-    const vec3  upRot   = cross(right, forward);
-    const float fovTan  = 0.577;   // tan(60°/2) ≈ 0.577 → vertical half-FOV
-    const float aspect  = 2.0;     // window is 2:1
+    const vec2  pixelCenter = vec2(gl_LaunchIDEXT.xy) + vec2(0.5);
+    const vec2  inUV        = pixelCenter / vec2(gl_LaunchSizeEXT.xy);
+    vec2        ndc         = inUV * 2.0 - 1.0;
+    ndc.y = -ndc.y;     // Vulkan launch IDs are origin-top-left; flip for screen-up = world-up
 
-    // Pixel-center NDC in [-1, 1]. Vulkan launch IDs are origin-top-left, so
-    // flip Y to make screen-up = world-up.
-    const vec2 pixelCenter = vec2(gl_LaunchIDEXT.xy) + vec2(0.5);
-    const vec2 inUV        = pixelCenter / vec2(gl_LaunchSizeEXT.xy);
-    vec2 ndc               = inUV * 2.0 - 1.0;
-    ndc.y = -ndc.y;
+    const vec3  eye    = cam.eye_aspect.xyz;
+    const float aspect = cam.eye_aspect.w;
+    const float fovTan = cam.forward_fovTan.w;
 
-    const vec3 dir = normalize(forward
-                               + ndc.x * fovTan * aspect * right
-                               + ndc.y * fovTan          * upRot);
+    const vec3 dir = normalize(cam.forward_fovTan.xyz
+                               + ndc.x * fovTan * aspect * cam.right_pad.xyz
+                               + ndc.y * fovTan          * cam.up_pad.xyz);
 
     payloadColor = vec3(0.0);
 
     traceRayEXT(
-        topLevelAS,         // TLAS
-        gl_RayFlagsOpaqueEXT,
-        0xFF,               // cull mask
-        0, 0, 0,             // sbt offset / stride / miss index
-        eye,
-        0.001,              // tmin
-        dir,
-        10000.0,            // tmax
-        0                    // payload location
+        topLevelAS, gl_RayFlagsOpaqueEXT, 0xFF,
+        0, 0, 0,
+        eye, 0.001,
+        dir, 10000.0,
+        0
     );
 
     imageStore(outImage, ivec2(gl_LaunchIDEXT.xy), vec4(payloadColor, 1.0));
