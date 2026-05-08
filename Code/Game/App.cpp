@@ -285,6 +285,26 @@ void App::Startup()
 		                         matNormalSlot.data(),
 		                         (uint32_t)matDiffuseSlot.size());
 
+		// Random point lights distributed across the Sponza interior.
+		// Engine-space bounds (after axis remap + 0.01 scale): roughly
+		// x ∈ [-15, 15], y ∈ [-6, 6], z ∈ [0, 14].
+		constexpr uint32_t kNumLights = 256;
+		std::vector<float> lightData(kNumLights * 8);
+		auto frand01 = []() { return (float)rand() / (float)RAND_MAX; };
+		for (uint32_t L = 0; L < kNumLights; ++L)
+		{
+			float* d = &lightData[L * 8];
+			d[0] = -14.f + 28.f * frand01();         // x
+			d[1] =  -5.f + 10.f * frand01();         // y
+			d[2] =   0.5f + 12.f * frand01();        // z
+			d[3] =   8.f + 4.f * frand01();          // intensity
+			d[4] =   0.4f + 0.6f * frand01();        // color r
+			d[5] =   0.4f + 0.6f * frand01();        // color g
+			d[6] =   0.4f + 0.6f * frand01();        // color b
+			d[7] =   0.f;                            // pad
+		}
+		g_theRTPath->SetLights(lightData.data(), kNumLights);
+
 		// Crytek OBJ axes (Y-up, +X-right, +Z-toward-viewer) → engine
 		// (X-fwd, Y-left, Z-up), uniform 0.01 scale.
 		const float s = 0.01f;
