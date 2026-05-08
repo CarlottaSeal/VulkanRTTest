@@ -33,3 +33,6 @@ extern Renderer* g_theRenderer;
 class VulkanDeferredPath;
 extern VulkanDeferredPath* g_theDeferred;
 
+class VulkanRTPath;
+extern VulkanRTPath* g_theRTPath;
+

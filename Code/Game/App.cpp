@@ -2,6 +2,7 @@
 #include "Engine/Renderer/Renderer.hpp"
 #include "Engine/Renderer/VulkanRenderer.h"
 #include "Engine/Renderer/VulkanDeferredPath.h"
+#include "Engine/Renderer/VulkanRTPath.h"
 #include "Engine/Renderer/Camera.hpp"
 #include "Engine/Renderer/SimpleTriangleFont.hpp"
 #include "Engine/Input/InputSystem.hpp"
@@ -24,6 +25,7 @@
 App* g_theApp = nullptr;
 Renderer* g_theRenderer = nullptr;
 VulkanDeferredPath* g_theDeferred = nullptr;
+VulkanRTPath* g_theRTPath = nullptr;
 InputSystem* g_theInput = nullptr;
 //AudioSystem* g_theAudio = nullptr;
 Window* g_theWindow = nullptr;
@@ -99,6 +101,70 @@ void App::Startup()
 	// Bring up the tile-deferred path on top of the (now-stable) Vulkan renderer.
 	g_theDeferred = new VulkanDeferredPath();
 	g_theDeferred->Init(g_theRenderer->GetSubRenderer());
+
+	// ---- Hardware ray-tracing path bring-up ----
+	// Build a single unit cube BLAS, wrap it in a 1-instance TLAS, compile the
+	// raygen / closesthit / miss SPV trio into an RT pipeline, build the SBT,
+	// and hook the descriptor set. After this returns, g_theRTPath is fully
+	// armed and TraceRays + a swapchain blit are the only remaining steps.
+	{
+		VulkanRenderer* vk = g_theRenderer->GetSubRenderer();
+		g_theRTPath = new VulkanRTPath();
+		g_theRTPath->Init(vk);
+
+		IntVec2 winDim = g_theWindow->GetClientDimensions();
+		const uint32_t outW = (uint32_t)winDim.x;
+		const uint32_t outH = (uint32_t)winDim.y;
+		g_theRTPath->RecreateOutput(outW, outH);
+
+		// Unit cube centered on origin, side 1, axis-aligned.
+		// Winding doesn't matter for ray-triangle intersection; layout is
+		// 8 vertices × float[3].
+		static const float cubeVerts[8 * 3] = {
+			-0.5f, -0.5f, -0.5f,
+			 0.5f, -0.5f, -0.5f,
+			 0.5f,  0.5f, -0.5f,
+			-0.5f,  0.5f, -0.5f,
+			-0.5f, -0.5f,  0.5f,
+			 0.5f, -0.5f,  0.5f,
+			 0.5f,  0.5f,  0.5f,
+			-0.5f,  0.5f,  0.5f,
+		};
+		static const uint32_t cubeIndices[36] = {
+			0, 1, 2,  0, 2, 3,    // -Z
+			4, 6, 5,  4, 7, 6,    // +Z
+			0, 4, 5,  0, 5, 1,    // -Y
+			3, 2, 6,  3, 6, 7,    // +Y
+			0, 3, 7,  0, 7, 4,    // -X
+			1, 5, 6,  1, 6, 2,    // +X
+		};
+		static VulkanBLAS s_cubeBLAS;
+		s_cubeBLAS = g_theRTPath->BuildBLAS(cubeVerts, 8, cubeIndices, 36);
+
+		// Single instance at identity. transform is row-major 3x4 = mat3 + translation,
+		// laid out as [r0c0..r0c3, r1c0..r1c3, r2c0..r2c3].
+		VkAccelerationStructureInstanceKHR inst{};
+		inst.transform.matrix[0][0] = 1.f;
+		inst.transform.matrix[1][1] = 1.f;
+		inst.transform.matrix[2][2] = 1.f;
+		inst.instanceCustomIndex                    = 0;
+		inst.mask                                   = 0xFF;
+		inst.instanceShaderBindingTableRecordOffset = 0;
+		inst.flags                                  = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+		inst.accelerationStructureReference         = s_cubeBLAS.address;
+		std::vector<VkAccelerationStructureInstanceKHR> instances{ inst };
+
+		static VulkanTLAS s_sceneTLAS;
+		s_sceneTLAS = g_theRTPath->BuildTLAS(instances);
+
+		// SPV paths — Run/ is the cwd by the time we reach Startup (Main_Windows.cpp
+		// does the chdir walk-up).
+		g_theRTPath->CreateRTPipeline("Data/Shaders/Vulkan/rt/raygen.rgen.spv",
+		                              "Data/Shaders/Vulkan/rt/closesthit.rchit.spv",
+		                              "Data/Shaders/Vulkan/rt/miss.rmiss.spv");
+		g_theRTPath->CreateSBT();
+		g_theRTPath->UpdateDescriptors(s_sceneTLAS);
+	}
 #endif
 
 	g_theGame = new Game();
@@ -115,6 +181,7 @@ void App::Shutdown()
 	g_theGame = nullptr;
 
 #ifdef ENGINE_VULKAN_RENDERER
+	if (g_theRTPath)   { g_theRTPath->Shutdown();   delete g_theRTPath;   g_theRTPath   = nullptr; }
 	if (g_theDeferred) { g_theDeferred->Shutdown(); delete g_theDeferred; g_theDeferred = nullptr; }
 #endif
 
