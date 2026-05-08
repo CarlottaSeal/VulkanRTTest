@@ -20,8 +20,8 @@ layout(set = 0, binding = 9)  readonly buffer UVCoords     { float uv[]; } uvbuf
 layout(set = 0, binding = 10) readonly buffer UVIdx        { uint  i[]; }  uvidx;
 layout(set = 0, binding = 11) readonly buffer MatNormalSlot{ int   s[]; }  matnslot;
 layout(set = 0, binding = 12) readonly buffer Lights       { vec4  d[]; }  lbuf;
-// 4 ints per pixel: lightIdx, wsum (float bits), M, _pad.
-layout(set = 0, binding = 13) buffer Reservoirs            { int   d[]; }  resbuf;
+layout(set = 0, binding = 13) buffer Reservoirs0           { int   d[]; }  resA;
+layout(set = 0, binding = 14) buffer Reservoirs1           { int   d[]; }  resB;
 
 layout(location = 0) rayPayloadInEXT vec3 payloadColor;
 layout(location = 1) rayPayloadEXT uint shadowed;
@@ -59,17 +59,40 @@ void rUpdateNoM(inout Reservoir r, int idx, float w, inout uint rng) {
         r.lightIdx = idx;
 }
 
-Reservoir readRes(uint pixIdx) {
+Reservoir readResAt(uint pixIdx, bool fromA) {
     Reservoir r;
-    r.lightIdx = resbuf.d[pixIdx*4 + 0];
-    r.wsum     = intBitsToFloat(resbuf.d[pixIdx*4 + 1]);
-    r.M        = resbuf.d[pixIdx*4 + 2];
+    if (fromA) {
+        r.lightIdx = resA.d[pixIdx*4 + 0];
+        r.wsum     = intBitsToFloat(resA.d[pixIdx*4 + 1]);
+        r.M        = resA.d[pixIdx*4 + 2];
+    } else {
+        r.lightIdx = resB.d[pixIdx*4 + 0];
+        r.wsum     = intBitsToFloat(resB.d[pixIdx*4 + 1]);
+        r.M        = resB.d[pixIdx*4 + 2];
+    }
     return r;
 }
-void writeRes(uint pixIdx, Reservoir r) {
-    resbuf.d[pixIdx*4 + 0] = r.lightIdx;
-    resbuf.d[pixIdx*4 + 1] = floatBitsToInt(r.wsum);
-    resbuf.d[pixIdx*4 + 2] = r.M;
+void writeResAt(uint pixIdx, Reservoir r, bool toA) {
+    if (toA) {
+        resA.d[pixIdx*4 + 0] = r.lightIdx;
+        resA.d[pixIdx*4 + 1] = floatBitsToInt(r.wsum);
+        resA.d[pixIdx*4 + 2] = r.M;
+    } else {
+        resB.d[pixIdx*4 + 0] = r.lightIdx;
+        resB.d[pixIdx*4 + 1] = floatBitsToInt(r.wsum);
+        resB.d[pixIdx*4 + 2] = r.M;
+    }
+}
+
+float pHatForSample(int idx, vec3 hitPos, vec3 N) {
+    if (idx < 0) return 0.0;
+    vec3  lp        = lbuf.d[idx*2 + 0].xyz;
+    float intensity = lbuf.d[idx*2 + 0].w;
+    vec3  toL = lp - hitPos;
+    float d   = length(toL);
+    vec3  L   = toL / max(d, 1e-6);
+    float NdL = max(dot(N, L), 0.0);
+    return NdL * intensity / (d * d);
 }
 
 void main()
@@ -121,13 +144,18 @@ void main()
         shadingN = normalize(T * nmap.x + B * nmap.y + N * nmap.z);
     }
 
-    const uint frameId   = floatBitsToUint(cam.misc.x);
-    const uint numLights = floatBitsToUint(cam.misc.y);
+    // CPU side ORs in 0x40000000 to keep bit pattern in normal-float range
+    // (avoids GPU FTZ on small denormal uints). Mask back here.
+    const uint frameId   = floatBitsToUint(cam.misc.x) & 0x3FFFFFFFu;
+    const uint numLights = floatBitsToUint(cam.misc.y) & 0x3FFFFFFFu;
     uint rng = wangHash(uint(gl_LaunchIDEXT.x) * 1973u
                       + uint(gl_LaunchIDEXT.y) * 9277u
                       + frameId * 26699u);
 
-    // ---- Initial RIS over M=8 candidates ----
+    // Ping-pong: this frame reads from `readA`, writes to the opposite.
+    const bool readA = (frameId & 1u) == 0u;
+
+    // ---- Initial RIS over M=16 candidates ----
     Reservoir r;
     r.lightIdx = -1;
     r.wsum     = 0.0;
@@ -135,45 +163,36 @@ void main()
     const int kCandidateCount = 16;
     for (int s = 0; s < kCandidateCount; ++s) {
         int idx = clamp(int(frand(rng) * float(numLights)), 0, int(numLights) - 1);
-        vec3  lp        = lbuf.d[idx*2 + 0].xyz;
-        float intensity = lbuf.d[idx*2 + 0].w;
-        vec3  toL = lp - hitWorld;
-        float d   = length(toL);
-        vec3  L   = toL / max(d, 1e-6);
-        float NdL = max(dot(shadingN, L), 0.0);
-        float pHat = NdL * intensity / (d * d);
-        rUpdate(r, idx, pHat * float(numLights), rng);    // pdf = 1/numLights
+        float pHat = pHatForSample(idx, hitWorld, shadingN);
+        rUpdate(r, idx, pHat * float(numLights), rng);
     }
 
-    // ---- Temporal reuse: merge prev-frame reservoir at same pixel ----
-    // Approximation: assumes static camera (no reprojection). With moving
-    // camera this introduces ghosting; a proper implementation reprojects
-    // via prev-frame view-proj.
-    const uint pixIdx = uint(gl_LaunchIDEXT.y) * uint(gl_LaunchSizeEXT.x) + uint(gl_LaunchIDEXT.x);
-    Reservoir prev = readRes(pixIdx);
     const int kMaxM = 20;
-    // Clamp M and scale wsum proportionally so the wsum/M ratio (which drives
-    // brightness) stays bounded; clamping M alone produces firefly pixels.
-    if (prev.M > kMaxM) {
-        prev.wsum *= float(kMaxM) / float(prev.M);
-        prev.M     = kMaxM;
-    }
-    if (prev.M > 0 && prev.lightIdx >= 0 && uint(prev.lightIdx) < numLights) {
-        // Reject prev's sample if it's now back-facing (pHat = 0 at curr surface).
-        int idx = prev.lightIdx;
-        vec3 lp = lbuf.d[idx*2 + 0].xyz;
-        float intensity = lbuf.d[idx*2 + 0].w;
-        vec3 toL = lp - hitWorld;
-        float d = length(toL);
-        vec3 L = toL / max(d, 1e-6);
-        float NdL = max(dot(shadingN, L), 0.0);
-        float pHatPrevCurr = NdL * intensity / (d * d);
-        if (pHatPrevCurr > 0.0) {
+
+    // ---- Temporal reuse: same pixel from prev frame ----
+    const ivec2 launchID   = ivec2(gl_LaunchIDEXT.xy);
+    const ivec2 launchSize = ivec2(gl_LaunchSizeEXT.xy);
+    const uint  pixIdx     = uint(launchID.y) * uint(launchSize.x) + uint(launchID.x);
+    {
+        Reservoir prev = readResAt(pixIdx, readA);
+        if (prev.M > kMaxM) {
+            prev.wsum *= float(kMaxM) / float(prev.M);
+            prev.M     = kMaxM;
+        }
+        if (prev.M > 0 && prev.lightIdx >= 0 && uint(prev.lightIdx) < numLights
+            && pHatForSample(prev.lightIdx, hitWorld, shadingN) > 0.0)
+        {
             int origM = r.M;
             rUpdateNoM(r, prev.lightIdx, prev.wsum, rng);
             r.M = origM + prev.M;
         }
     }
+
+    // ---- Spatial reuse — DISABLED temporarily ----
+    // The biased version (just merging neighbor wsums without pHat ratio
+    // reweight) over/under-weights samples whose neighbor pHat differs
+    // from current pHat, producing block-shaped flicker. Will re-enable
+    // once a geometric similarity gate (normal/depth) is in place.
 
     // ---- Final shading on the surviving sample ----
     vec3 lightContrib = vec3(0.0);
@@ -205,7 +224,7 @@ void main()
         }
     }
 
-    writeRes(pixIdx, r);
+    writeResAt(pixIdx, r, !readA);
 
     const vec3  skyColor    = vec3(0.50, 0.65, 0.85);
     const vec3  groundColor = vec3(0.30, 0.25, 0.22);

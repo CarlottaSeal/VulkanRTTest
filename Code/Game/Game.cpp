@@ -170,7 +170,7 @@ void Game::Update()
 			default:   m_pieceCount = 16;   break;
 		}
 	}
-	if (g_theApp->WasKeyJustPressed(KEYCODE_F5))
+	if (g_theApp->WasKeyJustPressed('V'))
 	{
 		m_useRTPath = !m_useRTPath;
 	}
@@ -239,7 +239,7 @@ void Game::Render() const
 			{
 				char hudBuf[160];
 				snprintf(hudBuf, sizeof(hudBuf),
-				         " RT MODE [F5]   pos: %.1f %.1f %.1f   yaw: %.1f  pitch: %.1f",
+				         " RT MODE [V]   pos: %.1f %.1f %.1f   yaw: %.1f  pitch: %.1f",
 				         m_player->m_position.x, m_player->m_position.y, m_player->m_position.z,
 				         m_player->m_orientation.m_yawDegrees, m_player->m_orientation.m_pitchDegrees);
 				DebugAddScreenText(hudBuf,
