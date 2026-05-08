@@ -58,9 +58,8 @@ extent for temporal, or two storage buffers indexed by `pixelIdx`.
 | # | Status | What |
 |---|--------|------|
 | 0 | DONE  | Lights SSBO at binding 12, UBO carries frameId + numLights, App generates 256 random lights distributed in Sponza. Closesthit still uses directional sun; lights buffer just sits there until step 1. |
-| 1 | TODO  | RIS in closesthit: M=8 candidates, weighted-reservoir picks one, shadow ray to chosen |
-| 2 | TODO  | Reservoir output buffer (binding 13). Closesthit writes `Reservoir` per-pixel |
-| 3 | TODO  | Temporal reuse: read prev-frame reservoir at same pixel, RIS-merge with current |
+| 1 | DONE  | RIS in closesthit: M=8 candidates, weighted-reservoir picks one, shadow ray to chosen. Verified — heavy noise + dim shadows because single-frame 1-spp RIS has huge variance and many close lights. This is the pre-ReSTIR baseline. |
+| 2+3 | IN PROGRESS | Reservoir SSBO (binding 13, sized w*h * 16B). Closesthit reads prev pixel's reservoir, RIS-merges with current, writes back. Temporal reuse only (no spatial yet). |
 | 4 | TODO  | Spatial reuse: 5-tap neighborhood RIS-merge over current reservoirs |
 | 5 | TODO  | Bias correction: similarity test (depth, normal) before accepting reuse |
 | 6 | TODO  | Split into separate passes (rgen → spatial → shading) |
