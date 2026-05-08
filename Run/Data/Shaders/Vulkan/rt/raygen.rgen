@@ -5,26 +5,35 @@
 layout(set = 0, binding = 0, rgba8) uniform image2D outImage;
 // Top-level acceleration structure to trace into.
 layout(set = 0, binding = 1) uniform accelerationStructureEXT topLevelAS;
-// Camera UBO (placeholder — actual layout matches engine's CameraConstants).
-layout(set = 0, binding = 2) uniform CameraUBO {
-    mat4 viewInverse;
-    mat4 projInverse;
-} cam;
+// Camera UBO is declared at binding 2 but unused in this first-cut shader —
+// camera params are hardcoded below. Once we wire engine matrices through
+// VulkanRTPath::UpdateCamera, switch to reading viewInverse/projInverse here.
 
 // Payload returned from closest-hit / miss.
 layout(location = 0) rayPayloadEXT vec3 payloadColor;
 
 void main()
 {
-    // Pixel coord in [0, w) × [0, h).
+    // Hardcoded camera: eye at (0, -3, 1.5) looking at the origin, +Z up,
+    // 60° vertical FOV, 2:1 aspect. The cube sits unit-sized at the origin.
+    const vec3  eye     = vec3(0.0, -3.0, 1.5);
+    const vec3  forward = normalize(vec3(0.0, 1.0, -0.5));
+    const vec3  up      = vec3(0.0, 0.0, 1.0);
+    const vec3  right   = normalize(cross(forward, up));
+    const vec3  upRot   = cross(right, forward);
+    const float fovTan  = 0.577;   // tan(60°/2) ≈ 0.577 → vertical half-FOV
+    const float aspect  = 2.0;     // window is 2:1
+
+    // Pixel-center NDC in [-1, 1]. Vulkan launch IDs are origin-top-left, so
+    // flip Y to make screen-up = world-up.
     const vec2 pixelCenter = vec2(gl_LaunchIDEXT.xy) + vec2(0.5);
     const vec2 inUV        = pixelCenter / vec2(gl_LaunchSizeEXT.xy);
-    const vec2 d           = inUV * 2.0 - 1.0;
+    vec2 ndc               = inUV * 2.0 - 1.0;
+    ndc.y = -ndc.y;
 
-    // Reconstruct world-space ray from camera matrices.
-    vec4 origin    = cam.viewInverse * vec4(0.0, 0.0, 0.0, 1.0);
-    vec4 target    = cam.projInverse * vec4(d.x, d.y, 1.0, 1.0);
-    vec4 direction = cam.viewInverse * vec4(normalize(target.xyz), 0.0);
+    const vec3 dir = normalize(forward
+                               + ndc.x * fovTan * aspect * right
+                               + ndc.y * fovTan          * upRot);
 
     payloadColor = vec3(0.0);
 
@@ -33,9 +42,9 @@ void main()
         gl_RayFlagsOpaqueEXT,
         0xFF,               // cull mask
         0, 0, 0,             // sbt offset / stride / miss index
-        origin.xyz,
+        eye,
         0.001,              // tmin
-        direction.xyz,
+        dir,
         10000.0,            // tmax
         0                    // payload location
     );

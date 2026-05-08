@@ -29,6 +29,7 @@
 #include <cmath>
 #include "Engine/Renderer/VulkanRenderer.h"
 #include "Engine/Renderer/VulkanDeferredPath.h"
+#include "Engine/Renderer/VulkanRTPath.h"
 #include "Engine/Audio/AudioSystem.hpp"
 
 #include "Game/Entity.hpp"
@@ -169,6 +170,10 @@ void Game::Update()
 			default:   m_pieceCount = 16;   break;
 		}
 	}
+	if (g_theApp->WasKeyJustPressed(KEYCODE_F5))
+	{
+		m_useRTPath = !m_useRTPath;
+	}
 
 	if (g_theDevConsole->GetMode() == OPEN_FULL)
 	{
@@ -205,6 +210,20 @@ void Game::Render() const
 		VulkanRenderer* vk = g_theRenderer->GetSubRenderer();
 		VkCommandBuffer cmd = vk->GetCurrentCommandBuffer();
 		uint32_t swapIdx = vk->GetCurrentSwapImageIndex();
+
+		// ---- Hardware ray tracing branch (F5) ----
+		// Bypasses the deferred path entirely: cmd buffer is already open from
+		// VulkanRenderer::BeginFrame, no render pass active. We dispatch
+		// raygen, then blit the storage image into the current swap image.
+		if (m_useRTPath && g_theRTPath)
+		{
+			IntVec2 winDim = g_theWindow->GetClientDimensions();
+			const uint32_t w = (uint32_t)winDim.x;
+			const uint32_t h = (uint32_t)winDim.y;
+			g_theRTPath->TraceRays(cmd, w, h);
+			g_theRTPath->BlitToSwapImage(cmd, w, h);
+			return;
+		}
 
 		// Build the lights up-front so both deferred and forward paths share the same data.
 		const float t = (float)m_gameClock->GetTotalSeconds();
