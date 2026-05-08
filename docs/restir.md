@@ -59,7 +59,8 @@ extent for temporal, or two storage buffers indexed by `pixelIdx`.
 |---|--------|------|
 | 0 | DONE  | Lights SSBO at binding 12, UBO carries frameId + numLights, App generates 256 random lights distributed in Sponza. Closesthit still uses directional sun; lights buffer just sits there until step 1. |
 | 1 | DONE  | RIS in closesthit: M=8 candidates, weighted-reservoir picks one, shadow ray to chosen. Verified — heavy noise + dim shadows because single-frame 1-spp RIS has huge variance and many close lights. This is the pre-ReSTIR baseline. |
-| 2+3 | IN PROGRESS | Reservoir SSBO (binding 13, sized w*h * 16B). Closesthit reads prev pixel's reservoir, RIS-merges with current, writes back. Temporal reuse only (no spatial yet). |
+| 2+3 | DONE  | Reservoir SSBO at binding 13, zero-init via vkCmdFillBuffer at create time. Closesthit: initial RIS over M=16 candidates, then temporal merge with prev pixel's reservoir (M-clamp scales wsum proportionally; back-face reject when prev.sample's pHat=0 at curr surface). Static-camera approximation — moving camera causes ghosting where prev sample is invalid (visible as transient dark edges, recovers in 1-2 frames). Verified via M-visualization debug: steady-state M ≈ 28 (8 fresh + 20 clamped history). |
+| 4 | TODO  | Second reservoir buffer (ping-pong). Spatial reuse: 5-tap neighborhood RIS-merge over PREV-frame reservoirs (avoiding race with current writes). Big variance reducer — effective M climbs to ~100+. |
 | 4 | TODO  | Spatial reuse: 5-tap neighborhood RIS-merge over current reservoirs |
 | 5 | TODO  | Bias correction: similarity test (depth, normal) before accepting reuse |
 | 6 | TODO  | Split into separate passes (rgen → spatial → shading) |
