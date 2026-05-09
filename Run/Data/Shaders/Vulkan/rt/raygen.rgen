@@ -58,14 +58,9 @@ void main()
         return;
     }
 
-    // SVGF variance for atrous's adaptive sigma. Two regimes:
-    //   - historyLen >= 4: prefilter the cross-frame moments variance with
-    //     a 3x3 gaussian, so atrous pass 1's sigma estimate isn't itself
-    //     noisy (the source of variance-driven flicker between adjacent
-    //     pixels with slightly different M1/M2 trajectories).
-    //   - historyLen < 4 (disocclusion): fall back to a 7x7 spatial luma
-    //     variance — single-frame moments give ~0 variance, which would
-    //     leave atrous tight right where smoothing is most needed.
+    // historyLen >= 4: 3x3 gaussian prefilter the cross-frame variance.
+    // historyLen <  4 (disocclusion): fall back to 7x7 spatial luma variance,
+    // since single-frame moments give ~0 and would leave atrous tight.
     vec4  m       = imageLoad(momentsImage, px);
     float histLen = m.b;
     float variance;

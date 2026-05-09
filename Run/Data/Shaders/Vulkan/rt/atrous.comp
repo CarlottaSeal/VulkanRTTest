@@ -28,10 +28,38 @@ float readResDepth(uint pixIdx, bool fromA) {
     return intBitsToFloat(fromA ? resA.d[b+7] : resB.d[b+7]);
 }
 
+// 12x12 shared tile for stride=1 — replaces 1600 SSBO fetches per workgroup
+// with 144 cooperative loads. Higher strides skip this (tile blows past 48KB).
+const int  TILE_DIM = 12;
+shared vec4 sND[TILE_DIM * TILE_DIM];
+
 void main()
 {
     ivec2 px   = ivec2(gl_GlobalInvocationID.xy);
     ivec2 size = imageSize(inImage);
+    const bool readPongA = (pc.frameId & 1u) != 0u;
+    const bool useSharedMem = (pc.stride == 1);
+
+    // Populate shared mem before any early-out path so all threads hit
+    // the barrier.
+    if (useSharedMem) {
+        ivec2 tileOrigin = ivec2(gl_WorkGroupID.xy) * 8 - 2;
+        uint  tid        = gl_LocalInvocationIndex;
+        for (uint i = tid; i < uint(TILE_DIM * TILE_DIM); i += 64u) {
+            ivec2 lp = ivec2(int(i) % TILE_DIM, int(i) / TILE_DIM);
+            ivec2 gp = tileOrigin + lp;
+            vec3  n  = vec3(0.0);
+            float d  = 0.0;
+            if (gp.x >= 0 && gp.y >= 0 && gp.x < size.x && gp.y < size.y) {
+                uint idx = uint(gp.y) * uint(size.x) + uint(gp.x);
+                n = readResNormal(idx, readPongA);
+                d = readResDepth (idx, readPongA);
+            }
+            sND[i] = vec4(n, d);
+        }
+        barrier();
+    }
+
     if (px.x >= size.x || px.y >= size.y) return;
 
     // Sky pass-through.
@@ -40,33 +68,32 @@ void main()
         return;
     }
 
-    const bool readPongA = (pc.frameId & 1u) != 0u;
     const uint pixIdx = uint(px.y) * uint(size.x) + uint(px.x);
-    const vec3  selfN = readResNormal(pixIdx, readPongA);
-    const float selfD = readResDepth (pixIdx, readPongA);
+
+    vec3  selfN;
+    float selfD;
+    if (useSharedMem) {
+        ivec2 lp = ivec2(gl_LocalInvocationID.xy) + ivec2(2);
+        vec4  s  = sND[lp.y * TILE_DIM + lp.x];
+        selfN = s.xyz;
+        selfD = s.w;
+    } else {
+        selfN = readResNormal(pixIdx, readPongA);
+        selfD = readResDepth (pixIdx, readPongA);
+    }
+
     const vec4  selfRGBA = imageLoad(inImage, px);
     const vec3  selfC = selfRGBA.rgb;
     const float selfL = dot(selfC, vec3(0.299, 0.587, 0.114));
     const float selfV = selfRGBA.a;
-    // Chromaticity (color normalized by luminance) — edge stop on this
-    // preserves palette tints across the spatial filter. ReSTIR DI picks
-    // one colored point light per pixel, so neighbors at similar luminance
-    // but different hue must NOT merge or all colored regions average to
-    // grey. Standard SVGF skips this because it assumes diffuse light is
-    // smooth in color after albedo demodulation.
+    // Chromaticity edge stop — ReSTIR DI's per-pixel point-light pick
+    // makes hue high-frequency, so without this neighbors at the same
+    // brightness but different hue average to grey.
     const vec3 selfChrom = selfC / max(selfL, 0.01);
 
-    // Adaptive luminance sigma. Floor at 0.08 — even with SVGF variance,
-    // there's irreducible per-frame jitter (RIS pick, spatial taps, shadow
-    // re-trace) that needs SOME baseline smoothing to not show up as moire
-    // between adjacent pixels with slightly different variance estimates.
-    const float sigmaL = clamp(sqrt(max(selfV, 1e-6)) * 4.0 + 0.08, 0.08, 0.4);
+    const float sigmaL = clamp(sqrt(max(selfV, 1e-6)) * 4.0 + 0.08, 0.08, 0.2);
 
-    // SVGF / A-Trous wavelet kernel: 5x5 with B3-spline (1,4,6,4,1)/16
-    // outer-product weights. Center pixel weighs more than far ones, so
-    // flat regions smooth harder; edge stops still cut off across
-    // silhouettes. Reach is extended by multi-pass strides, not by a
-    // wider kernel.
+    // 5x5 B3-spline (1,4,6,4,1)/16 outer product. Reach extended by stride.
     const float kB3[5] = float[5](1.0/16.0, 4.0/16.0, 6.0/16.0, 4.0/16.0, 1.0/16.0);
 
     vec3  sumC = vec3(0.0);
@@ -76,9 +103,20 @@ void main()
         for (int dx = -2; dx <= 2; ++dx) {
             ivec2 npx = px + ivec2(dx, dy) * pc.stride;
             if (npx.x < 0 || npx.y < 0 || npx.x >= size.x || npx.y >= size.y) continue;
-            uint  nIdx = uint(npx.y) * uint(size.x) + uint(npx.x);
-            vec3  nN   = readResNormal(nIdx, readPongA);
-            float nD   = readResDepth (nIdx, readPongA);
+
+            vec3  nN;
+            float nD;
+            if (useSharedMem) {
+                ivec2 lp = ivec2(gl_LocalInvocationID.xy) + ivec2(2) + ivec2(dx, dy);
+                vec4  s  = sND[lp.y * TILE_DIM + lp.x];
+                nN = s.xyz;
+                nD = s.w;
+            } else {
+                uint nIdx = uint(npx.y) * uint(size.x) + uint(npx.x);
+                nN = readResNormal(nIdx, readPongA);
+                nD = readResDepth (nIdx, readPongA);
+            }
+
             vec4  nRGBA = imageLoad(inImage, npx);
             vec3  nC   = nRGBA.rgb;
             float nL   = dot(nC, vec3(0.299, 0.587, 0.114));
@@ -89,15 +127,12 @@ void main()
             float wN = pow(max(dot(selfN, nN), 0.0), 8.0);
             float wD = exp(-abs(selfD - nD) / max(selfD, 0.01) * 8.0);
             float wL = exp(-abs(selfL - nL) / sigmaL);
-            // sigma 0.4 — chromaticity is roughly a vec3 of normalized
-            // components, so length differences ~0.3 mean strong hue
-            // separation (red palette vs green palette).
             float wC = exp(-length(selfChrom - nChrom) / 0.4);
             float w  = (dx == 0 && dy == 0) ? kernelW
                                             : (kernelW * wN * wD * wL * wC);
 
             sumC += w * nC;
-            sumV += w * w * nV;     // variance reduces by w² under weighted avg
+            sumV += w * w * nV;
             wsum += w;
         }
     }
