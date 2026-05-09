@@ -25,27 +25,6 @@ layout(set = 0, binding = 18, r32ui)   uniform uimage2D matIdImage;
 
 layout(location = 0) rayPayloadEXT vec3 payloadColor;
 
-vec3 readResNormal(uint pixIdx, bool fromA) {
-    uint b = pixIdx * 12u;
-    if (fromA)
-        return vec3(intBitsToFloat(resA.d[b+4]),
-                    intBitsToFloat(resA.d[b+5]),
-                    intBitsToFloat(resA.d[b+6]));
-    return vec3(intBitsToFloat(resB.d[b+4]),
-                intBitsToFloat(resB.d[b+5]),
-                intBitsToFloat(resB.d[b+6]));
-}
-vec3 readResHitWorld(uint pixIdx, bool fromA) {
-    uint b = pixIdx * 12u;
-    if (fromA)
-        return vec3(intBitsToFloat(resA.d[b+8]),
-                    intBitsToFloat(resA.d[b+9]),
-                    intBitsToFloat(resA.d[b+10]));
-    return vec3(intBitsToFloat(resB.d[b+8]),
-                intBitsToFloat(resB.d[b+9]),
-                intBitsToFloat(resB.d[b+10]));
-}
-
 void main()
 {
     const ivec2 launchID   = ivec2(gl_LaunchIDEXT.xy);
@@ -72,113 +51,36 @@ void main()
 
     payloadColor = min(payloadColor, vec3(4.0));
 
-    // Sky pixels skip TAA (closesthit didn't fire → reservoir reproject is stale).
-    // Variance = 0 for sky; moments reset.
+    // Sky pass-through.
     vec4 albedoRGBA = imageLoad(albedoImage, px);
     if (albedoRGBA.a < 0.5) {
         imageStore(historyImage, px, vec4(payloadColor, 0.0));
-        imageStore(momentsImage, px, vec4(0.0));
         return;
     }
 
-    const uint pixIdx = uint(launchID.y) * uint(launchSize.x) + uint(launchID.x);
-    const uint frameId = floatBitsToUint(cam.misc.x) & 0x3FFFFFFFu;
-    // Self pixel's closesthit just finished, so PONG holds this frame's data.
-    // Reprojection samples a neighbor pixel — that neighbor's closesthit
-    // hasn't necessarily run yet (race), so for neighbor lookups read PING.
-    const bool readPongA = (frameId & 1u) != 0u;
-    const bool readPingA = !readPongA;
-    const vec3 selfN     = readResNormal(pixIdx, readPongA);
-
-    vec3  reprojColor = vec3(0.0);
-    vec3  prevMoments = vec3(0.0);     // r=M1, g=M2, b=count
-    bool  historyValid = false;
-    {
-        const vec3  pe = cam.prev_eye_aspect.xyz;
-        const float pa = cam.prev_eye_aspect.w;
-        const vec3  pf = cam.prev_forward_fovTan.xyz;
-        const float pt = cam.prev_forward_fovTan.w;
-        const vec3  pr = cam.prev_right_pad.xyz;
-        const vec3  pu = cam.prev_up_pad.xyz;
-
-        const vec3 storedHitW = readResHitWorld(pixIdx, readPongA);
-        const vec3 toHit = storedHitW - pe;
-        const float vz   = dot(toHit, pf);
-        if (vz > 0.0) {
-            const float vx = dot(toHit, pr);
-            const float vy = dot(toHit, pu);
-            const float ndcX = vx / (vz * pt * pa);
-            const float ndcY = vy / (vz * pt);
-            const vec2 prevUV = vec2(ndcX * 0.5 + 0.5, -ndcY * 0.5 + 0.5);
-            if (prevUV.x >= 0.0 && prevUV.x <= 1.0 && prevUV.y >= 0.0 && prevUV.y <= 1.0) {
-                const ivec2 prevPx = ivec2(prevUV * vec2(launchSize));
-                if (prevPx.x >= 0 && prevPx.y >= 0 &&
-                    prevPx.x < launchSize.x && prevPx.y < launchSize.y) {
-                    const uint  prevIdx = uint(prevPx.y) * uint(launchSize.x) + uint(prevPx.x);
-                    const vec3  pN   = readResNormal  (prevIdx, readPingA);
-                    const vec3  pHit = readResHitWorld(prevIdx, readPingA);
-                    // Surface match: normal + hit distance + material id.
-                    // matId mismatch is a hard reject — different materials
-                    // on geometrically similar surfaces (the source of the
-                    // worst ghosting case in Sponza).
-                    uint  currMatId = imageLoad(matIdImage, px).r;
-                    uint  prevMatId = imageLoad(matIdImage, prevPx).r;
-                    if (currMatId != 0u && currMatId == prevMatId &&
-                        dot(pN, selfN) > 0.97 &&
-                        length(pHit - storedHitW) < max(length(storedHitW - pe), 1.0) * 0.02)
-                    {
-                        vec4 hSample = imageLoad(historyImage, prevPx);
-                        reprojColor  = hSample.rgb;
-                        prevMoments  = imageLoad(momentsImage, prevPx).rgb;
-                        historyValid = true;
-                    }
-                }
-            }
+    // No TAA color blend — reservoir's temporal+spatial reuse is the only
+    // temporal accumulation. Color stability comes from sample stability
+    // across frames, not from blending color buffers (which causes ghost).
+    // Spatial variance estimate from 7x7 luminance neighborhood drives
+    // the atrous filter's adaptive sigma.
+    float sumL = 0.0, sumL2 = 0.0, n = 0.0;
+    for (int dy = -3; dy <= 3; ++dy) {
+        for (int dx = -3; dx <= 3; ++dx) {
+            ivec2 npx = px + ivec2(dx, dy);
+            if (npx.x < 0 || npx.y < 0 ||
+                npx.x >= launchSize.x || npx.y >= launchSize.y) continue;
+            vec3 nC = imageLoad(historyImage, npx).rgb;
+            float nL = dot(nC, vec3(0.299, 0.587, 0.114));
+            sumL  += nL;
+            sumL2 += nL * nL;
+            n     += 1.0;
         }
     }
-
-    // SVGF moment update: 1/M alpha. With matId rejection killing most
-    // false-positive history reuse, we can let M cap higher — more samples
-    // accumulate, less noise, and ghost is held in check by the gate.
-    const float kMaxM = 32.0;
-    float newM = historyValid ? min(prevMoments.b + 1.0, kMaxM) : 1.0;
-    float alpha = 1.0 / newM;
-
-    vec3 result = mix(reprojColor, payloadColor, alpha);
-
-    // Running M1, M2 for true sample variance.
-    float curL  = dot(payloadColor, vec3(0.299, 0.587, 0.114));
-    float newM1 = mix(prevMoments.r, curL,        alpha);
-    float newM2 = mix(prevMoments.g, curL * curL, alpha);
-    float variance = max(newM2 - newM1 * newM1, 0.0);
-
-    // SVGF spatial variance fallback: temporal variance is unreliable when
-    // M is small (just disoccluded). Estimate from 7x7 neighborhood luma
-    // distribution and boost the result so atrous smooths these regions hard.
-    if (newM < 4.0) {
-        float sumL = 0.0;
-        float sumL2 = 0.0;
-        float n = 0.0;
-        for (int dy = -3; dy <= 3; ++dy) {
-            for (int dx = -3; dx <= 3; ++dx) {
-                ivec2 npx = px + ivec2(dx, dy);
-                if (npx.x < 0 || npx.y < 0 ||
-                    npx.x >= launchSize.x || npx.y >= launchSize.y) continue;
-                vec3 nC = imageLoad(historyImage, npx).rgb;
-                float nL = dot(nC, vec3(0.299, 0.587, 0.114));
-                sumL  += nL;
-                sumL2 += nL * nL;
-                n     += 1.0;
-            }
-        }
-        if (n > 0.0) {
-            float meanL    = sumL / n;
-            float spatVar  = max(sumL2 / n - meanL * meanL, 0.0);
-            // Boost by (4 / M) so M=1 gets full spatial estimate, M=3 gets ~33%.
-            variance = max(variance, spatVar * (4.0 / max(newM, 1.0)));
-        }
+    float variance = 0.0;
+    if (n > 0.0) {
+        float meanL = sumL / n;
+        variance = max(sumL2 / n - meanL * meanL, 0.0);
     }
 
-    imageStore(historyImage, px, vec4(result, variance));
-    imageStore(momentsImage, px, vec4(newM1, newM2, newM, 0.0));
+    imageStore(historyImage, px, vec4(payloadColor, variance));
 }

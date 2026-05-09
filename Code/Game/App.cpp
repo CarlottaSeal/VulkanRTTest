@@ -285,23 +285,23 @@ void App::Startup()
 		                         matNormalSlot.data(),
 		                         (uint32_t)matDiffuseSlot.size());
 
-		// Random point lights distributed across the Sponza interior.
-		// Engine-space bounds (after axis remap + 0.01 scale): roughly
-		// x ∈ [-15, 15], y ∈ [-6, 6], z ∈ [0, 14].
-		constexpr uint32_t kNumLights = 256;
+		// Fewer + stronger lights for cleaner ReSTIR DI: 64 lights at higher
+		// intensity instead of 256 weak ones. Same total energy, but each
+		// pixel's RIS sees fewer competitors → lower per-frame pick variance.
+		constexpr uint32_t kNumLights = 64;
 		std::vector<float> lightData(kNumLights * 8);
 		auto frand01 = []() { return (float)rand() / (float)RAND_MAX; };
 		for (uint32_t L = 0; L < kNumLights; ++L)
 		{
 			float* d = &lightData[L * 8];
-			d[0] = -14.f + 28.f * frand01();         // x
-			d[1] =  -5.f + 10.f * frand01();         // y
-			d[2] =   0.5f + 12.f * frand01();        // z
-			d[3] =   8.f + 4.f * frand01();          // intensity
-			d[4] =   0.4f + 0.6f * frand01();        // color r
-			d[5] =   0.4f + 0.6f * frand01();        // color g
-			d[6] =   0.4f + 0.6f * frand01();        // color b
-			d[7] =   0.f;                            // pad
+			d[0] = -14.f + 28.f * frand01();
+			d[1] =  -5.f + 10.f * frand01();
+			d[2] =   0.5f + 12.f * frand01();
+			d[3] =  25.f + 15.f * frand01();         // intensity 25-40 (was 8-12)
+			d[4] =   0.4f + 0.6f * frand01();
+			d[5] =   0.4f + 0.6f * frand01();
+			d[6] =   0.4f + 0.6f * frand01();
+			d[7] =   0.f;
 		}
 		g_theRTPath->SetLights(lightData.data(), kNumLights);
 

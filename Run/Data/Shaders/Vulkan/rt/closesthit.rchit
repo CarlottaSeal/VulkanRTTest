@@ -277,9 +277,10 @@ void main()
         r.M = origM + nr.M;
     }
 
-    // Final shading on the surviving sample. Albedo is demodulated — return
-    // un-modulated lighting and let raygen multiply by albedo after the
-    // spatial filter (preserves texture detail through the blur).
+    // Final shading + visibility re-trace. If the surviving sample is
+    // occluded at the current pixel (could have come from a spatial
+    // neighbor where it WAS visible), zero the reservoir so it doesn't
+    // get carried into next frame's TAA — that's the ghost-trail source.
     vec3 lightContrib = vec3(0.0);
     if (r.lightIdx >= 0 && r.M > 0) {
         int   idx       = r.lightIdx;
@@ -304,8 +305,19 @@ void main()
                 hitWorld + N * 0.001,
                 0.0, L, d - 0.01, 1
             );
-            if (shadowed == 0u)
+            if (shadowed == 0u) {
                 lightContrib = NdL * intensity * lcol / (d * d) * W;
+            } else {
+                // Occluded — invalidate so next frame doesn't keep blending it in.
+                r.lightIdx = -1;
+                r.wsum     = 0.0;
+                r.M        = 0;
+            }
+        } else {
+            // Back-faced at curr surface (came from neighbor) — invalidate.
+            r.lightIdx = -1;
+            r.wsum     = 0.0;
+            r.M        = 0;
         }
     }
 

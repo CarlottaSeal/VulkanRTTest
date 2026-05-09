@@ -224,7 +224,7 @@ void Game::Render() const
 			const float fwdArr[3] = { fwd.x,   fwd.y,   fwd.z   };
 			const float rgtArr[3] = { right.x, right.y, right.z };
 			const float upArr[3]  = { up.x,    up.y,    up.z    };
-			constexpr uint32_t kNumLightsRT = 256;
+			constexpr uint32_t kNumLightsRT = 64;
 			g_theRTPath->UpdateCameraVectors(eyeArr, fwdArr, rgtArr, upArr,
 			                                  fovTan, aspect,
 			                                  m_rtFrameId++, kNumLightsRT);
