@@ -327,6 +327,8 @@ void App::Startup()
 		                              "Data/Shaders/Vulkan/rt/shadowmiss.rmiss.spv");
 		g_theRTPath->CreateSBT();
 		g_theRTPath->UpdateDescriptors(s_sceneTLAS, s_sponzaBLAS);
+		g_theRTPath->CreateDenoisePipelines("Data/Shaders/Vulkan/rt/atrous.comp.spv",
+		                                    "Data/Shaders/Vulkan/rt/composite.comp.spv");
 	}
 #endif
 

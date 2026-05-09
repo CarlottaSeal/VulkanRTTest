@@ -1,0 +1,75 @@
+#version 460
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform image2D inImage;
+layout(set = 0, binding = 1, rgba16f) uniform image2D outImage;
+layout(set = 0, binding = 2) buffer Reservoirs0 { int d[]; } resA;
+layout(set = 0, binding = 3) buffer Reservoirs1 { int d[]; } resB;
+layout(set = 0, binding = 4, rgba8)   uniform image2D albedoImage;
+
+layout(push_constant) uniform PC {
+    int  stride;
+    uint frameId;
+} pc;
+
+vec3 readResNormal(uint pixIdx, bool fromA) {
+    uint b = pixIdx * 12u;
+    if (fromA)
+        return vec3(intBitsToFloat(resA.d[b+4]),
+                    intBitsToFloat(resA.d[b+5]),
+                    intBitsToFloat(resA.d[b+6]));
+    return vec3(intBitsToFloat(resB.d[b+4]),
+                intBitsToFloat(resB.d[b+5]),
+                intBitsToFloat(resB.d[b+6]));
+}
+float readResDepth(uint pixIdx, bool fromA) {
+    uint b = pixIdx * 12u;
+    return intBitsToFloat(fromA ? resA.d[b+7] : resB.d[b+7]);
+}
+
+void main()
+{
+    ivec2 px   = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(inImage);
+    if (px.x >= size.x || px.y >= size.y) return;
+
+    // Sky pass-through.
+    if (imageLoad(albedoImage, px).a < 0.5) {
+        imageStore(outImage, px, imageLoad(inImage, px));
+        return;
+    }
+
+    // Closesthit wrote PONG this frame. PONG side = A on odd frames, B on even.
+    const bool readPongA = (pc.frameId & 1u) != 0u;
+    const uint pixIdx = uint(px.y) * uint(size.x) + uint(px.x);
+    const vec3  selfN = readResNormal(pixIdx, readPongA);
+    const float selfD = readResDepth (pixIdx, readPongA);
+    const vec3  selfC = imageLoad(inImage, px).rgb;
+    const float selfL = dot(selfC, vec3(0.299, 0.587, 0.114));
+
+    vec3  sum  = vec3(0.0);
+    float wsum = 0.0;
+    for (int dy = -2; dy <= 2; ++dy) {
+        for (int dx = -2; dx <= 2; ++dx) {
+            ivec2 npx = px + ivec2(dx, dy) * pc.stride;
+            if (npx.x < 0 || npx.y < 0 || npx.x >= size.x || npx.y >= size.y) continue;
+            uint  nIdx = uint(npx.y) * uint(size.x) + uint(npx.x);
+            vec3  nN   = readResNormal(nIdx, readPongA);
+            float nD   = readResDepth (nIdx, readPongA);
+            vec3  nC   = imageLoad(inImage, npx).rgb;
+            float nL   = dot(nC, vec3(0.299, 0.587, 0.114));
+
+            float wN = pow(max(dot(selfN, nN), 0.0), 8.0);
+            float wD = exp(-abs(selfD - nD) / max(selfD, 0.01) * 8.0);
+            float wL = exp(-abs(selfL - nL) * 4.0);
+            float w  = (dx == 0 && dy == 0) ? 1.0 : (wN * wD * wL);
+
+            sum  += w * nC;
+            wsum += w;
+        }
+    }
+
+    vec3 filtered = (wsum > 0.0) ? (sum / wsum) : selfC;
+    imageStore(outImage, px, vec4(filtered, 1.0));
+}

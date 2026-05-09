@@ -69,12 +69,15 @@ extent for temporal, or two storage buffers indexed by `pixelIdx`.
 | 9 | DONE  | Motion-vector reprojection: prev-frame camera cached in UBO; raygen projects current hitWorld through prev camera basis to find prev-frame screen coord. Surface match check (`dot(N) > 0.95` + `Δhit/dist < 5%`) gates whether to use the reprojected history pixel; if rejected, alpha = 1.0 (no history). Eliminates the bulk of camera-rotation ghosting. |
 | 10 | DONE | Albedo demodulation: closesthit writes baseColor to a separate G-buffer (binding 16, rgba8); payload carries un-modulated lighting only. Raygen multiplies albedo back after the spatial filter, so texture detail isn't blurred. |
 
+| 11 | DONE  | Multi-pass A-Trous via compute (stride 1/2/4/8/16, ~31-pixel reach). Two RGBA16F ping-pong images. atrous.comp + composite.comp; new compute pipelines + descriptor pools. Edge stops: normal pow(dot,8) + depth exp(-Δd/d × 8) + luminance exp(-ΔL × 4). Reservoir reads use the PONG side (current frame's data, written by closesthit) since the RT→compute barrier guarantees all closesthit writes are visible. |
+| 12 | DONE  | Reprojection gate tightened to cos > 0.97 + hit-distance ratio < 2%. Sky pixels short-circuit the TAA path entirely (raygen detects via albedo.a sentinel). |
+
 ## Remaining work
 
-The single-pass 5×5 spatial filter only covers ~5-pixel low-frequency noise; the residual blotches are wider. Production-quality denoising next:
-- **Multi-pass A-Trous** (strides 1, 2, 4, 8, 16) needs a compute pipeline + ping-pong storage images + barriers between passes — ~200 LOC.
-- **SVGF**: variance estimation + variance-adaptive filter strength + temporal-spatial joint variance refinement. Significant — ~400 LOC.
-- **Tighter reprojection**: tracking prev-frame view-proj matrix instead of basis; bilinear sample of prev history; depth-bounded surface match.
+The 1-spp ReSTIR DI + multi-pass A-Trous gets close but still leaves some ghost on rotation and a fine-grained residual noise. Closing those needs **SVGF**:
+- Per-pixel luminance variance estimate (temporal + spatial joint refinement).
+- Variance-adaptive filter strength: high-variance areas get more aggressive blur, low-variance areas stay sharp.
+- Variance-driven history rejection so the noise / ghost trade-off becomes automatic instead of a fixed alpha.
 | 4 | TODO  | Spatial reuse: 5-tap neighborhood RIS-merge over current reservoirs |
 | 5 | TODO  | Bias correction: similarity test (depth, normal) before accepting reuse |
 | 6 | TODO  | Split into separate passes (rgen → spatial → shading) |

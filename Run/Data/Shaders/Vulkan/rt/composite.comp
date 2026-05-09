@@ -1,0 +1,25 @@
+#version 460
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform image2D filteredLight;
+layout(set = 0, binding = 1, rgba8)   uniform image2D albedoImage;
+layout(set = 0, binding = 2, rgba8)   uniform image2D outImage;
+
+void main()
+{
+    ivec2 px   = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(outImage);
+    if (px.x >= size.x || px.y >= size.y) return;
+
+    vec3 light = imageLoad(filteredLight, px).rgb;
+    vec4 albedoRGBA = imageLoad(albedoImage, px);
+    vec3 final;
+    if (albedoRGBA.a < 0.5) {
+        final = light;
+    } else {
+        final = light * albedoRGBA.rgb;
+    }
+    vec3 ldr = final / (final + 1.0);
+    imageStore(outImage, px, vec4(ldr, 1.0));
+}

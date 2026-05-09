@@ -233,6 +233,7 @@ void Game::Render() const
 			const uint32_t w = (uint32_t)winDim.x;
 			const uint32_t h = (uint32_t)winDim.y;
 			g_theRTPath->TraceRays(cmd, w, h);
+			g_theRTPath->RunDenoise(cmd, w, h, m_rtFrameId);
 			g_theRTPath->BlitToSwapImage(cmd, w, h, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
 			if (g_theDeferred)
