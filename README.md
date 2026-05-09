@@ -95,5 +95,3 @@ Place `sponza.obj` + `sponza.mtl` + the `textures/` directory under
   Reservoir Resampling for Real-Time Ray Tracing with Dynamic Direct
   Lighting*. SIGGRAPH 2020.
 - Schied et al. *Spatiotemporal Variance-Guided Filtering*. HPG 2017.
-- HummaWhite/Vulkan-ReSTIR-PT — useful reference for unbiased MIS
-  spatial reuse formulation.
