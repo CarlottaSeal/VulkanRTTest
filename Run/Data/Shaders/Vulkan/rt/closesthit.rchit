@@ -136,8 +136,8 @@ float pHatForSample(int idx, vec3 hitPos, vec3 N) {
 }
 
 bool similarSurface(vec3 nA, float dA, vec3 nB, float dB) {
-    return dot(nA, nB) > 0.97              // ~14° threshold
-        && abs(dA - dB) <= max(dA, dB) * 0.02;
+    return dot(nA, nB) > 0.99              // ~8° threshold (was 14°)
+        && abs(dA - dB) <= max(dA, dB) * 0.01;
 }
 
 void main()
@@ -318,10 +318,12 @@ void main()
             if (shadowed == 0u) {
                 lightContrib = NdL * intensity * lcol / (d * d) * W;
             } else {
-                // Occluded — invalidate so next frame doesn't keep blending it in.
-                r.lightIdx = -1;
-                r.wsum     = 0.0;
-                r.M        = 0;
+                // Occluded — soft penalty. With only 16 lights, fewer
+                // occluded candidates cycle through, so noise from carrying
+                // a halved-weight stale sample is acceptable. Avoids the
+                // black pop that full invalidation produces in deep shadow.
+                r.wsum *= 0.5;
+                r.M     = max(r.M / 2, 1);
             }
         } else {
             // Back-faced at curr surface (came from neighbor) — invalidate.
@@ -338,10 +340,7 @@ void main()
     r.hitWorld = hitWorld;
     writeResAt(pixIdx, r, !readA);
 
-    const vec3  skyColor    = vec3(0.50, 0.65, 0.85);
-    const vec3  groundColor = vec3(0.30, 0.25, 0.22);
-    const float upDot       = clamp(shadingN.z * 0.5 + 0.5, 0.0, 1.0);
-    const vec3  ambient     = mix(groundColor, skyColor, upDot) * 0.25;
+    const vec3  ambient     = vec3(0.0);
     const vec3  finalColor  = ambient + lightContrib;
 
     // SVGF moments — Welford-like running mean+variance update so we don't

@@ -34,6 +34,12 @@ InputSystem* g_theInput = nullptr;
 Window* g_theWindow = nullptr;
 Game* g_theGame = nullptr;
 
+// RT lights, exposed so Game.cpp can debug-draw them and so the camera UBO
+// gets the matching numLights count.
+uint32_t g_rtNumLights = 0;
+std::vector<Vec3>  g_rtLightPositions;
+std::vector<Rgba8> g_rtLightColors;
+
 App::App()
 {
 }
@@ -285,23 +291,49 @@ void App::Startup()
 		                         matNormalSlot.data(),
 		                         (uint32_t)matDiffuseSlot.size());
 
-		// Fewer + stronger lights for cleaner ReSTIR DI: 64 lights at higher
-		// intensity instead of 256 weak ones. Same total energy, but each
-		// pixel's RIS sees fewer competitors → lower per-frame pick variance.
-		constexpr uint32_t kNumLights = 64;
+		// 16 strong lights — enough for variety but few enough that each
+		// region of the scene is clearly dominated by one or two, so atrous
+		// neighbor averaging doesn't smear different palette tints into grey.
+		constexpr uint32_t kNumLights = 16;
+		g_rtNumLights = kNumLights;
+		g_rtLightPositions.clear();
+		g_rtLightColors.clear();
+		g_rtLightPositions.reserve(kNumLights);
+		g_rtLightColors.reserve(kNumLights);
 		std::vector<float> lightData(kNumLights * 8);
 		auto frand01 = []() { return (float)rand() / (float)RAND_MAX; };
+		// Discrete saturated palette — random independent RGB channels gave
+		// muddy near-white in aggregate; named tints stay identifiable in
+		// the rendered image.
+		const float kPalette[7][3] = {
+			{1.0f, 0.35f, 0.30f},   // warm red
+			{1.0f, 0.70f, 0.30f},   // amber
+			{0.40f, 1.0f, 0.50f},   // green
+			{0.30f, 0.55f, 1.0f},   // blue
+			{1.0f, 0.40f, 0.90f},   // magenta
+			{0.45f, 1.0f, 1.0f},    // cyan
+			{1.0f, 1.0f, 1.0f},     // white
+		};
 		for (uint32_t L = 0; L < kNumLights; ++L)
 		{
 			float* d = &lightData[L * 8];
 			d[0] = -14.f + 28.f * frand01();
 			d[1] =  -5.f + 10.f * frand01();
 			d[2] =   0.5f + 12.f * frand01();
-			d[3] =  25.f + 15.f * frand01();         // intensity 25-40 (was 8-12)
-			d[4] =   0.4f + 0.6f * frand01();
-			d[5] =   0.4f + 0.6f * frand01();
-			d[6] =   0.4f + 0.6f * frand01();
-			d[7] =   0.f;
+			d[3] =  35.f + 25.f * frand01();         // intensity 35-60 — high
+			                                         // enough to overcome 1/d²
+			                                         // falloff with only 16 lights
+			const int p = rand() % 7;
+			d[4] = kPalette[p][0];
+			d[5] = kPalette[p][1];
+			d[6] = kPalette[p][2];
+			d[7] = 0.f;
+			g_rtLightPositions.emplace_back(d[0], d[1], d[2]);
+			g_rtLightColors.emplace_back(
+				(unsigned char)(d[4] * 255.f),
+				(unsigned char)(d[5] * 255.f),
+				(unsigned char)(d[6] * 255.f),
+				255);
 		}
 		g_theRTPath->SetLights(lightData.data(), kNumLights);
 

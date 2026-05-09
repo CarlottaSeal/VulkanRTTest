@@ -7,8 +7,7 @@ layout(location = 0) rayPayloadInEXT vec3 payloadColor;
 
 void main()
 {
-    const float t = clamp(gl_WorldRayDirectionEXT.y * 0.5 + 0.5, 0.0, 1.0);
-    payloadColor  = mix(vec3(0.04, 0.06, 0.10), vec3(0.50, 0.70, 1.00), t);
+    payloadColor  = vec3(0.0);   // black sky — no environment contribution
     // Sky sentinel: alpha=0 marks "no geometry", raygen detects this and
     // writes the sky color directly without going through TAA or the filter
     // (TAA reprojection on a sky pixel uses stale hitWorld → ghost trails).

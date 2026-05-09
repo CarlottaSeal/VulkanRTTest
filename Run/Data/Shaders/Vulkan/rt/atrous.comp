@@ -48,6 +48,13 @@ void main()
     const vec3  selfC = selfRGBA.rgb;
     const float selfL = dot(selfC, vec3(0.299, 0.587, 0.114));
     const float selfV = selfRGBA.a;
+    // Chromaticity (color normalized by luminance) — edge stop on this
+    // preserves palette tints across the spatial filter. ReSTIR DI picks
+    // one colored point light per pixel, so neighbors at similar luminance
+    // but different hue must NOT merge or all colored regions average to
+    // grey. Standard SVGF skips this because it assumes diffuse light is
+    // smooth in color after albedo demodulation.
+    const vec3 selfChrom = selfC / max(selfL, 0.01);
 
     // Adaptive luminance sigma. Floor at 0.08 — even with SVGF variance,
     // there's irreducible per-frame jitter (RIS pick, spatial taps, shadow
@@ -78,11 +85,16 @@ void main()
             float nV   = nRGBA.a;
 
             float kernelW = kB3[dx + 2] * kB3[dy + 2];
+            vec3  nChrom  = nC / max(nL, 0.01);
             float wN = pow(max(dot(selfN, nN), 0.0), 8.0);
             float wD = exp(-abs(selfD - nD) / max(selfD, 0.01) * 8.0);
             float wL = exp(-abs(selfL - nL) / sigmaL);
+            // sigma 0.4 — chromaticity is roughly a vec3 of normalized
+            // components, so length differences ~0.3 mean strong hue
+            // separation (red palette vs green palette).
+            float wC = exp(-length(selfChrom - nChrom) / 0.4);
             float w  = (dx == 0 && dy == 0) ? kernelW
-                                            : (kernelW * wN * wD * wL);
+                                            : (kernelW * wN * wD * wL * wC);
 
             sumC += w * nC;
             sumV += w * w * nV;     // variance reduces by w² under weighted avg
