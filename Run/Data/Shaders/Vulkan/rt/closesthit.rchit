@@ -27,6 +27,7 @@ layout(set = 0, binding = 12) readonly buffer Lights       { vec4  d[]; }  lbuf;
 layout(set = 0, binding = 13) buffer Reservoirs0           { int   d[]; }  resA;
 layout(set = 0, binding = 14) buffer Reservoirs1           { int   d[]; }  resB;
 layout(set = 0, binding = 16, rgba8) uniform image2D albedoImage;
+layout(set = 0, binding = 18, r32ui) uniform uimage2D matIdImage;
 
 layout(location = 0) rayPayloadInEXT vec3 payloadColor;
 layout(location = 1) rayPayloadEXT uint shadowed;
@@ -203,7 +204,7 @@ void main()
     r.normal   = N;
     r.depth    = hitDepth;
     r.hitWorld = hitWorld;
-    const int kCandidateCount = 16;
+    const int kCandidateCount = 32;
     for (int s = 0; s < kCandidateCount; ++s) {
         int idx = clamp(int(frand(rng) * float(numLights)), 0, int(numLights) - 1);
         float pHat = pHatForSample(idx, hitWorld, shadingN);
@@ -232,14 +233,29 @@ void main()
         }
     }
 
-    // Spatial reuse — 3 close-range neighbor taps, only when surface matches.
-    const ivec2 spatialOffsets[3] = ivec2[3](
-        ivec2(-2,  0),
-        ivec2( 2,  0),
-        ivec2( 0,  2)
-    );
-    for (int t = 0; t < 3; ++t) {
-        ivec2 nl = launchID + spatialOffsets[t];
+    // Spatial reuse — 10 random taps in an 8-pixel radius disk (matches the
+    // HummaWhite ReSTIR reference's pattern, scaled down for our Sponza).
+    const int   kSpatialTaps   = 10;
+    const float kSpatialRadius = 8.0;
+    for (int t = 0; t < kSpatialTaps; ++t) {
+        // Concentric-disk sample from two uniform [0,1) values.
+        vec2 u = vec2(frand(rng), frand(rng)) * 2.0 - 1.0;
+        vec2 disk;
+        if (u.x == 0.0 && u.y == 0.0) {
+            disk = vec2(0.0);
+        } else {
+            float r2, theta;
+            if (abs(u.x) > abs(u.y)) {
+                r2 = u.x;
+                theta = (3.14159265 / 4.0) * (u.y / u.x);
+            } else {
+                r2 = u.y;
+                theta = 3.14159265 / 2.0 - (3.14159265 / 4.0) * (u.x / u.y);
+            }
+            disk = r2 * vec2(cos(theta), sin(theta));
+        }
+        ivec2 nl = launchID + ivec2(disk * kSpatialRadius);
+        if (nl == launchID) continue;
         if (nl.x < 0 || nl.y < 0 || nl.x >= launchSize.x || nl.y >= launchSize.y) continue;
         uint nPixIdx = uint(nl.y) * uint(launchSize.x) + uint(nl.x);
 
@@ -251,9 +267,6 @@ void main()
         if (nr.M <= 0 || nr.lightIdx < 0 || uint(nr.lightIdx) >= numLights) continue;
         if (!similarSurface(nr.normal, nr.depth, N, hitDepth)) continue;
 
-        // Unbiased MIS reweight: weight to add = pHat_curr * W_origin * M_origin
-        //                                      = pHat_curr * wsum / pHat_origin.
-        // pHat_origin is evaluated at the neighbor's surface for nr.lightIdx.
         float pHat_curr   = pHatForSample(nr.lightIdx, hitWorld,    shadingN);
         float pHat_origin = pHatForSample(nr.lightIdx, nr.hitWorld, nr.normal);
         if (pHat_curr <= 0.0 || pHat_origin <= 0.0) continue;
@@ -311,5 +324,7 @@ void main()
     // Stash albedo for raygen's final composite (alpha=1 marks "real surface"
     // so raygen knows to blend; miss writes alpha=0 for sky).
     imageStore(albedoImage, ivec2(gl_LaunchIDEXT.xy), vec4(baseColor, 1.0));
+    // Stamp material id so raygen can reject reprojection across material boundaries.
+    imageStore(matIdImage, ivec2(gl_LaunchIDEXT.xy), uvec4(matId + 1u, 0, 0, 0));
     payloadColor = ambient + lightContrib;
 }
