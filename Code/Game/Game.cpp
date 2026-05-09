@@ -225,20 +225,9 @@ void Game::Render() const
 			const float rgtArr[3] = { right.x, right.y, right.z };
 			const float upArr[3]  = { up.x,    up.y,    up.z    };
 			extern uint32_t g_rtNumLights;
-			extern std::vector<Vec3>  g_rtLightPositions;
-			extern std::vector<Rgba8> g_rtLightColors;
 			g_theRTPath->UpdateCameraVectors(eyeArr, fwdArr, rgtArr, upArr,
 			                                  fovTan, aspect,
 			                                  m_rtFrameId++, g_rtNumLights);
-
-			// Colored sphere markers at each light's world position. USE_DEPTH
-			// so they get occluded by walls; per-light palette tint matches
-			// the light's emission color.
-			for (size_t i = 0; i < g_rtLightPositions.size(); ++i) {
-				DebugAddWorldPoint(g_rtLightPositions[i], 0.25f, 0.05f,
-				                   g_rtLightColors[i], g_rtLightColors[i],
-				                   DebugRenderMode::USE_DEPTH);
-			}
 
 			IntVec2 winDim = g_theWindow->GetClientDimensions();
 			const uint32_t w = (uint32_t)winDim.x;
@@ -249,13 +238,6 @@ void Game::Render() const
 
 			if (g_theDeferred)
 			{
-				// 3D forward debug pass: LOADs the RT result + clears a fresh
-				// depth so DebugRenderWorld's depth-tested spheres land at the
-				// right z. Sits between RT blit and the 2D HUD overlay.
-				g_theDeferred->BeginRTDebug(cmd, swapIdx);
-				DebugRenderWorld(((Player*)m_player)->m_worldCamera);
-				g_theDeferred->EndRTDebug(cmd);
-
 				char hudBuf[160];
 				snprintf(hudBuf, sizeof(hudBuf),
 				         " RT MODE [V]   pos: %.1f %.1f %.1f   yaw: %.1f  pitch: %.1f",

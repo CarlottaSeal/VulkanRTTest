@@ -8,6 +8,14 @@ Built on the [Igloo Engine](https://github.com/CarlottaSeal/IglooEngine).
 Sibling of [Tessera](https://github.com/CarlottaSeal/Tessera) (the
 tile-deferred / TBR demo).
 
+**Scope**: direct illumination only. Indirect / GI is out of scope —
+unlit pixels get a small hemisphere ambient stand-in. For real
+multi-bounce, see
+[LuminaGI](https://github.com/CarlottaSeal/IglooEngine) (real-time
+DX12, Lumen-style cards + SDF) or
+[LuminaGI-CudaRef](https://github.com/CarlottaSeal/LuminaGI-CudaRef)
+(CUDA ground-truth path tracer).
+
 ## What's in here
 
 **ReSTIR DI** (`Run/Data/Shaders/Vulkan/rt/closesthit.rchit`)

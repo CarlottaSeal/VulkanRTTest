@@ -334,7 +334,15 @@ void main()
     r.hitWorld = hitWorld;
     writeResAt(pixIdx, r, !readA);
 
-    const vec3 finalColor = lightContrib;
+    // Hemisphere ambient as a cheap stand-in for sky / multi-bounce GI —
+    // ReSTIR DI is direct-only, so without this any surface not hit by a
+    // point light is pure black. NB: composite multiplies by albedo, so
+    // the ambient here must also be albedo-demodulated.
+    const vec3  skyColor    = vec3(0.50, 0.65, 0.85);
+    const vec3  groundColor = vec3(0.30, 0.25, 0.22);
+    const float upDot       = clamp(shadingN.z * 0.5 + 0.5, 0.0, 1.0);
+    const vec3  ambient     = mix(groundColor, skyColor, upDot) * 0.15;
+    const vec3  finalColor  = ambient + lightContrib;
 
     // Welford EWMA — storing M2 directly would cancel against M1² in fp16.
     // momentsImage layout: r=M1, g=variance, b=historyLen, a=variance copy.
