@@ -40,16 +40,25 @@ void main()
         return;
     }
 
-    // Closesthit wrote PONG this frame. PONG side = A on odd frames, B on even.
     const bool readPongA = (pc.frameId & 1u) != 0u;
     const uint pixIdx = uint(px.y) * uint(size.x) + uint(px.x);
     const vec3  selfN = readResNormal(pixIdx, readPongA);
     const float selfD = readResDepth (pixIdx, readPongA);
-    const vec3  selfC = imageLoad(inImage, px).rgb;
+    const vec4  selfRGBA = imageLoad(inImage, px);
+    const vec3  selfC = selfRGBA.rgb;
     const float selfL = dot(selfC, vec3(0.299, 0.587, 0.114));
+    const float selfV = selfRGBA.a;
 
-    vec3  sum  = vec3(0.0);
-    float wsum = 0.0;
+    // Adaptive luminance sigma. Floor at 0.08 — even with SVGF variance,
+    // there's irreducible per-frame jitter (RIS pick, spatial taps, shadow
+    // re-trace) that needs SOME baseline smoothing to not show up as moire
+    // between adjacent pixels with slightly different variance estimates.
+    const float sigmaL = clamp(sqrt(max(selfV, 1e-6)) * 4.0 + 0.08, 0.08, 0.4);
+
+    vec3  sumC  = vec3(0.0);
+    float sumV  = 0.0;
+    float wsum  = 0.0;
+    float wsumSq = 0.0;
     for (int dy = -2; dy <= 2; ++dy) {
         for (int dx = -2; dx <= 2; ++dx) {
             ivec2 npx = px + ivec2(dx, dy) * pc.stride;
@@ -57,19 +66,24 @@ void main()
             uint  nIdx = uint(npx.y) * uint(size.x) + uint(npx.x);
             vec3  nN   = readResNormal(nIdx, readPongA);
             float nD   = readResDepth (nIdx, readPongA);
-            vec3  nC   = imageLoad(inImage, npx).rgb;
+            vec4  nRGBA = imageLoad(inImage, npx);
+            vec3  nC   = nRGBA.rgb;
             float nL   = dot(nC, vec3(0.299, 0.587, 0.114));
+            float nV   = nRGBA.a;
 
             float wN = pow(max(dot(selfN, nN), 0.0), 8.0);
             float wD = exp(-abs(selfD - nD) / max(selfD, 0.01) * 8.0);
-            float wL = exp(-abs(selfL - nL) * 4.0);
+            float wL = exp(-abs(selfL - nL) / sigmaL);
             float w  = (dx == 0 && dy == 0) ? 1.0 : (wN * wD * wL);
 
-            sum  += w * nC;
-            wsum += w;
+            sumC   += w * nC;
+            sumV   += w * w * nV;     // variance reduces by w² under weighted avg
+            wsum   += w;
+            wsumSq += w * w;
         }
     }
 
-    vec3 filtered = (wsum > 0.0) ? (sum / wsum) : selfC;
-    imageStore(outImage, px, vec4(filtered, 1.0));
+    vec3  filteredC = (wsum > 0.0)   ? (sumC / wsum)        : selfC;
+    float filteredV = (wsumSq > 0.0) ? (sumV / (wsum*wsum)) : selfV;
+    imageStore(outImage, px, vec4(filteredC, filteredV));
 }

@@ -27,6 +27,7 @@ layout(set = 0, binding = 12) readonly buffer Lights       { vec4  d[]; }  lbuf;
 layout(set = 0, binding = 13) buffer Reservoirs0           { int   d[]; }  resA;
 layout(set = 0, binding = 14) buffer Reservoirs1           { int   d[]; }  resB;
 layout(set = 0, binding = 16, rgba8) uniform image2D albedoImage;
+layout(set = 0, binding = 17, rgba16f) uniform image2D momentsImage;
 layout(set = 0, binding = 18, r32ui) uniform uimage2D matIdImage;
 
 layout(location = 0) rayPayloadInEXT vec3 payloadColor;
@@ -204,39 +205,48 @@ void main()
     r.normal   = N;
     r.depth    = hitDepth;
     r.hitWorld = hitWorld;
-    const int kCandidateCount = 32;
+    const int kCandidateCount = 48;
     for (int s = 0; s < kCandidateCount; ++s) {
         int idx = clamp(int(frand(rng) * float(numLights)), 0, int(numLights) - 1);
         float pHat = pHatForSample(idx, hitWorld, shadingN);
         rUpdate(r, idx, pHat * float(numLights), rng);
     }
 
-    const int kMaxM = 20;
+    const int kMaxM = 12;
 
     // Temporal reuse — same pixel, gated by surface similarity.
     const ivec2 launchID   = ivec2(gl_LaunchIDEXT.xy);
     const ivec2 launchSize = ivec2(gl_LaunchSizeEXT.xy);
     const uint  pixIdx     = uint(launchID.y) * uint(launchSize.x) + uint(launchID.x);
+    Reservoir prev = readResAt(pixIdx, readA);
+    if (prev.M > kMaxM) {
+        prev.wsum *= float(kMaxM) / float(prev.M);
+        prev.M     = kMaxM;
+    }
+    const bool prevSurfaceMatch = (prev.M > 0
+                                && similarSurface(prev.normal, prev.depth, N, hitDepth));
+    if (prevSurfaceMatch && prev.lightIdx >= 0 && uint(prev.lightIdx) < numLights)
     {
-        Reservoir prev = readResAt(pixIdx, readA);
-        if (prev.M > kMaxM) {
-            prev.wsum *= float(kMaxM) / float(prev.M);
-            prev.M     = kMaxM;
-        }
-        if (prev.M > 0 && prev.lightIdx >= 0 && uint(prev.lightIdx) < numLights
-            && similarSurface(prev.normal, prev.depth, N, hitDepth)
-            && pHatForSample(prev.lightIdx, hitWorld, shadingN) > 0.0)
-        {
-            int origM = r.M;
-            rUpdateNoM(r, prev.lightIdx, prev.wsum, rng);
+        // MIS reweighting — the chosen light's pHat at THIS frame's surface
+        // vs at the surface where it was originally accepted. For a static
+        // camera the ratio is 1.0 (same pixel, same surface). When the camera
+        // moves, the ratio shrinks if the light no longer fits the new
+        // surface, killing the carry-over and the ghost trail it produces.
+        float pHat_curr   = pHatForSample(prev.lightIdx, hitWorld,      shadingN);
+        float pHat_origin = pHatForSample(prev.lightIdx, prev.hitWorld, prev.normal);
+        if (pHat_curr > 0.0 && pHat_origin > 0.0) {
+            float weight = prev.wsum * (pHat_curr / pHat_origin);
+            int   origM  = r.M;
+            rUpdateNoM(r, prev.lightIdx, weight, rng);
             r.M = origM + prev.M;
         }
     }
 
-    // Spatial reuse — 10 random taps in an 8-pixel radius disk (matches the
-    // HummaWhite ReSTIR reference's pattern, scaled down for our Sponza).
-    const int   kSpatialTaps   = 10;
-    const float kSpatialRadius = 8.0;
+    // Spatial reuse — random taps in a disk. More taps = lower per-frame
+    // noise (each tap is an independent cheap sample of the local light
+    // distribution), at the cost of more pHat evaluations per pixel.
+    const int   kSpatialTaps   = 16;
+    const float kSpatialRadius = 10.0;
     for (int t = 0; t < kSpatialTaps; ++t) {
         // Concentric-disk sample from two uniform [0,1) values.
         vec2 u = vec2(frand(rng), frand(rng)) * 2.0 - 1.0;
@@ -332,11 +342,42 @@ void main()
     const vec3  groundColor = vec3(0.30, 0.25, 0.22);
     const float upDot       = clamp(shadingN.z * 0.5 + 0.5, 0.0, 1.0);
     const vec3  ambient     = mix(groundColor, skyColor, upDot) * 0.25;
+    const vec3  finalColor  = ambient + lightContrib;
+
+    // SVGF moments — Welford-like running mean+variance update so we don't
+    // need to store M2 (which would catastrophically cancel against M1*M1
+    // in fp16, manifesting as moire pattern in flat regions).
+    // Layout: .r = M1, .g = variance, .b = historyLen, .a = variance copy
+    // for raygen to read into history.alpha.
+    {
+        const float lum = dot(finalColor, vec3(0.299, 0.587, 0.114));
+        const vec4  prevMoments = imageLoad(momentsImage, ivec2(gl_LaunchIDEXT.xy));
+        const float prevM1   = prevMoments.r;
+        const float prevVar  = prevMoments.g;
+        const float prevHist = prevMoments.b;
+        const bool  momentsValid = prevSurfaceMatch
+                                && prevHist >= 1.0
+                                && prevHist <= 64.0;
+        float histLen, M1, variance;
+        if (momentsValid) {
+            histLen = min(prevHist + 1.0, 32.0);
+            float a = max(1.0 / histLen, 0.05);
+            float delta = lum - prevM1;
+            M1       = prevM1 + a * delta;
+            variance = (1.0 - a) * (prevVar + a * delta * delta);
+        } else {
+            histLen  = 1.0;
+            M1       = lum;
+            variance = 0.0;
+        }
+        imageStore(momentsImage, ivec2(gl_LaunchIDEXT.xy),
+                   vec4(M1, variance, histLen, variance));
+    }
 
     // Stash albedo for raygen's final composite (alpha=1 marks "real surface"
     // so raygen knows to blend; miss writes alpha=0 for sky).
     imageStore(albedoImage, ivec2(gl_LaunchIDEXT.xy), vec4(baseColor, 1.0));
     // Stamp material id so raygen can reject reprojection across material boundaries.
     imageStore(matIdImage, ivec2(gl_LaunchIDEXT.xy), uvec4(matId + 1u, 0, 0, 0));
-    payloadColor = ambient + lightContrib;
+    payloadColor = finalColor;
 }

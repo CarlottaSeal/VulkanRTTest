@@ -58,28 +58,39 @@ void main()
         return;
     }
 
-    // No TAA color blend — reservoir's temporal+spatial reuse is the only
-    // temporal accumulation. Color stability comes from sample stability
-    // across frames, not from blending color buffers (which causes ghost).
-    // Spatial variance estimate from 7x7 luminance neighborhood drives
-    // the atrous filter's adaptive sigma.
-    float sumL = 0.0, sumL2 = 0.0, n = 0.0;
-    for (int dy = -3; dy <= 3; ++dy) {
-        for (int dx = -3; dx <= 3; ++dx) {
-            ivec2 npx = px + ivec2(dx, dy);
-            if (npx.x < 0 || npx.y < 0 ||
-                npx.x >= launchSize.x || npx.y >= launchSize.y) continue;
-            vec3 nC = imageLoad(historyImage, npx).rgb;
-            float nL = dot(nC, vec3(0.299, 0.587, 0.114));
-            sumL  += nL;
-            sumL2 += nL * nL;
-            n     += 1.0;
+    // No TAA color blend — reservoir's temporal+spatial reuse + SVGF moments
+    // are the temporal accumulation. closesthit writes M1/M2/historyLen/variance
+    // into momentsImage every frame, gated by the same surface similarity
+    // check the reservoir uses. Multi-frame variance is far less noisy than a
+    // single-frame spatial estimate, so atrous keeps its sigma tight in flat
+    // regions and sharp textures survive.
+    //
+    // Disocclusion (historyLen < 4): fall back to a 7x7 spatial luminance
+    // variance, otherwise variance ~= 0 from one-frame moments would freeze
+    // atrous wide open at zero sigma right where smoothing is needed most.
+    vec4  m         = imageLoad(momentsImage, px);
+    float histLen   = m.b;
+    float variance  = m.a;
+
+    if (histLen < 4.0) {
+        float sumL = 0.0, sumL2 = 0.0, n = 0.0;
+        for (int dy = -3; dy <= 3; ++dy) {
+            for (int dx = -3; dx <= 3; ++dx) {
+                ivec2 npx = px + ivec2(dx, dy);
+                if (npx.x < 0 || npx.y < 0 ||
+                    npx.x >= launchSize.x || npx.y >= launchSize.y) continue;
+                vec3 nC = imageLoad(historyImage, npx).rgb;
+                float nL = dot(nC, vec3(0.299, 0.587, 0.114));
+                sumL  += nL;
+                sumL2 += nL * nL;
+                n     += 1.0;
+            }
         }
-    }
-    float variance = 0.0;
-    if (n > 0.0) {
-        float meanL = sumL / n;
-        variance = max(sumL2 / n - meanL * meanL, 0.0);
+        if (n > 0.0) {
+            float meanL = sumL / n;
+            float spatialVar = max(sumL2 / n - meanL * meanL, 0.0);
+            variance = max(variance, spatialVar);
+        }
     }
 
     imageStore(historyImage, px, vec4(payloadColor, variance));
