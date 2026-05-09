@@ -58,21 +58,35 @@ void main()
         return;
     }
 
-    // No TAA color blend — reservoir's temporal+spatial reuse + SVGF moments
-    // are the temporal accumulation. closesthit writes M1/M2/historyLen/variance
-    // into momentsImage every frame, gated by the same surface similarity
-    // check the reservoir uses. Multi-frame variance is far less noisy than a
-    // single-frame spatial estimate, so atrous keeps its sigma tight in flat
-    // regions and sharp textures survive.
-    //
-    // Disocclusion (historyLen < 4): fall back to a 7x7 spatial luminance
-    // variance, otherwise variance ~= 0 from one-frame moments would freeze
-    // atrous wide open at zero sigma right where smoothing is needed most.
-    vec4  m         = imageLoad(momentsImage, px);
-    float histLen   = m.b;
-    float variance  = m.a;
+    // SVGF variance for atrous's adaptive sigma. Two regimes:
+    //   - historyLen >= 4: prefilter the cross-frame moments variance with
+    //     a 3x3 gaussian, so atrous pass 1's sigma estimate isn't itself
+    //     noisy (the source of variance-driven flicker between adjacent
+    //     pixels with slightly different M1/M2 trajectories).
+    //   - historyLen < 4 (disocclusion): fall back to a 7x7 spatial luma
+    //     variance — single-frame moments give ~0 variance, which would
+    //     leave atrous tight right where smoothing is most needed.
+    vec4  m       = imageLoad(momentsImage, px);
+    float histLen = m.b;
+    float variance;
 
-    if (histLen < 4.0) {
+    if (histLen >= 4.0) {
+        const float k[3] = float[3](1.0/4.0, 1.0/2.0, 1.0/4.0);
+        float vSum = 0.0, kSum = 0.0;
+        for (int dy = -1; dy <= 1; ++dy) {
+            for (int dx = -1; dx <= 1; ++dx) {
+                ivec2 npx = px + ivec2(dx, dy);
+                if (npx.x < 0 || npx.y < 0 ||
+                    npx.x >= launchSize.x || npx.y >= launchSize.y) continue;
+                float w  = k[dx + 1] * k[dy + 1];
+                vec4  nm = imageLoad(momentsImage, npx);
+                if (nm.b < 4.0) continue;       // skip stale neighbors
+                vSum += w * nm.a;
+                kSum += w;
+            }
+        }
+        variance = (kSum > 0.0) ? (vSum / kSum) : m.a;
+    } else {
         float sumL = 0.0, sumL2 = 0.0, n = 0.0;
         for (int dy = -3; dy <= 3; ++dy) {
             for (int dx = -3; dx <= 3; ++dx) {
@@ -86,6 +100,7 @@ void main()
                 n     += 1.0;
             }
         }
+        variance = m.a;
         if (n > 0.0) {
             float meanL = sumL / n;
             float spatialVar = max(sumL2 / n - meanL * meanL, 0.0);
