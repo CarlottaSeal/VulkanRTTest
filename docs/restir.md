@@ -71,6 +71,7 @@ extent for temporal, or two storage buffers indexed by `pixelIdx`.
 
 | 11 | DONE  | Multi-pass A-Trous via compute (stride 1/2/4/8/16, ~31-pixel reach). Two RGBA16F ping-pong images. atrous.comp + composite.comp; new compute pipelines + descriptor pools. Edge stops: normal pow(dot,8) + depth exp(-Δd/d × 8) + luminance exp(-ΔL × 4). Reservoir reads use the PONG side (current frame's data, written by closesthit) since the RT→compute barrier guarantees all closesthit writes are visible. |
 | 12 | DONE  | Reprojection gate tightened to cos > 0.97 + hit-distance ratio < 2%. Sky pixels short-circuit the TAA path entirely (raygen detects via albedo.a sentinel). |
+| 13 | NEXT  | SVGF — variance estimation + variance-driven adaptive filter + variance-aware history rejection (auto noise/ghost balance). |
 
 ## Remaining work
 
