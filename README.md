@@ -104,6 +104,6 @@ Place `sponza.obj` + `sponza.mtl` + the `textures/` directory under
   Lighting*. SIGGRAPH 2020.
 - Schied et al. *Spatiotemporal Variance-Guided Filtering*. HPG 2017.
 
-##Appendix
+## Appendix
 
 I'm no longer in ReSTIR so probably won't concentrate on this project any more.
