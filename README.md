@@ -100,10 +100,10 @@ Place `sponza.obj` + `sponza.mtl` + the `textures/` directory under
 ## References
 
 - Bitterli, Wyman, Pharr, Shirley, Lefohn, Jarosz. *Spatiotemporal
+  Reservoir Resampling for Real-Time Ray Tracing with Dynamic Direct
+  Lighting*. SIGGRAPH 2020.
+- Schied et al. *Spatiotemporal Variance-Guided Filtering*. HPG 2017.
 
 ##Appendix
 
 I'm no longer in ReSTIR so probably won't concentrate on this project any more.
-  Reservoir Resampling for Real-Time Ray Tracing with Dynamic Direct
-  Lighting*. SIGGRAPH 2020.
-- Schied et al. *Spatiotemporal Variance-Guided Filtering*. HPG 2017.
