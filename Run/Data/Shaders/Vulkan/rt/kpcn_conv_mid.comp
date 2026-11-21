@@ -34,7 +34,8 @@ void main()
         uint c = i / (SH * SW), r = i % (SH * SW);
         ivec2 q = origin + ivec2(r % SW, r / SW) - 1;
         bool inside = all(greaterThanEqual(q, ivec2(0))) && all(lessThan(q, pc.size));
-        tile[c][r / SW][r % SW] = inside ? actIn[(q.y * pc.size.x + q.x) * 4 + int(c)] : uvec4(0);
+        uvec4 v = inside ? actIn[(q.y * pc.size.x + q.x) * 4 + int(c)] : uvec4(0);
+        tile[c][r / SW][r % SW] = v & ~(((v >> 15) & 0x00010001u) * 0xFFFFu);  // ReLU of the previous layer if it was the tensor-core one
     }
     barrier();
 

@@ -1,0 +1,101 @@
+#version 450
+#extension GL_KHR_cooperative_matrix : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+// kpcn_conv_mid as an implicit GEMM on the tensor cores (VK_KHR_cooperative_matrix).
+// For each of the 9 taps, out[px][32] += in[px shifted by tap][32] * W[tap][32][32]:
+// a strip of 16 pixels in a row is one 16-row A matrix, the 32 input channels are
+// two K=16 chunks, the 32 outputs two N=16 accumulators. fp16 in, fp32 accumulate.
+//
+// Same 32x16 tile + 1 px halo staged in shared memory as the scalar version, but
+// stored pixel-major (32 halves = 4 uvec4 per pixel) so an A strip is 16 rows with
+// a stride of one pixel. Eight subgroups, each owns 2 rows = 4 strips, so every B
+// load feeds 4 MMAs.
+//
+// Accumulators start from the bias and are stored straight to the activation
+// buffer as fp16 WITHOUT the ReLU; whoever reads them next (this shader's staging,
+// the scalar mid, kpcn_apply) applies it on load. Width must be a multiple of 16.
+// Weights: fp16 copy [tap 9][in 32][out 32] at wOff (in halves) of the weights
+// buffer; biases are the fp32 ones at bOff (vec4s), as before.
+
+#define TW 32
+#define TH 16
+#define SW (TW + 2)
+#define SH (TH + 2)
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 3) readonly  buffer ActIn    { uvec4 actIn[]; };
+layout(set = 0, binding = 4) writeonly buffer ActOut16 { float16_t actOut16[]; };
+layout(set = 0, binding = 5) readonly  buffer Weights   { vec4 w[]; };
+layout(set = 0, binding = 5) readonly  buffer Weights16 { float16_t w16[]; };
+
+layout(push_constant) uniform PC { ivec2 size; int wOff; int bOff; } pc;
+
+shared uvec4 tile[SH * SW * 4];
+shared float biasRows[16 * 32];  // the 32 biases repeated in 16 rows: accumulator init
+
+#define MatA  coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseA>
+#define MatB  coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB>
+#define MatC  coopmat<float,     gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator>
+#define MatCh coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseAccumulator>
+
+void main()
+{
+    const ivec2 origin = ivec2(gl_WorkGroupID.xy) * ivec2(TW, TH);
+
+    for (uint i = gl_LocalInvocationIndex; i < SH * SW * 4u; i += 256u)
+    {
+        uint r = i >> 2, c = i & 3u;
+        ivec2 q = origin + ivec2(r % SW, r / SW) - 1;
+        bool inside = all(greaterThanEqual(q, ivec2(0))) && all(lessThan(q, pc.size));
+        uvec4 v = inside ? actIn[(q.y * pc.size.x + q.x) * 4 + int(c)] : uvec4(0);
+        tile[i] = v & ~(((v >> 15) & 0x00010001u) * 0xFFFFu);  // previous layer's ReLU
+    }
+    for (uint i = gl_LocalInvocationIndex; i < 16u * 32u; i += 256u)
+        biasRows[i] = w[pc.bOff + int((i & 31u) >> 2)][i & 3u];
+    barrier();
+
+    const uint row0 = gl_SubgroupID * 2u;
+
+    MatC acc[4][2];  // [strip: row0 left, row0 right, row1 left, row1 right][N chunk]
+    for (int s = 0; s < 4; ++s)
+        for (uint n = 0; n < 2u; ++n)
+            coopMatLoad(acc[s][n], biasRows, n * 16u, 32u, gl_CooperativeMatrixLayoutRowMajor);
+
+    for (uint ky = 0; ky < 3u; ++ky)
+    for (uint kx = 0; kx < 3u; ++kx)
+    {
+        uint tap = ky * 3u + kx;
+        for (uint k = 0; k < 2u; ++k)
+        {
+            // Units of uvec4: 4 per pixel, K chunk k starts 2 uvec4s in.
+            MatA a[4];
+            for (uint s = 0; s < 4u; ++s)
+            {
+                uint p = (row0 + (s >> 1) + ky) * SW + kx + (s & 1u) * 16u;
+                coopMatLoad(a[s], tile, p * 4u + k * 2u, 4u, gl_CooperativeMatrixLayoutRowMajor);
+            }
+            for (uint n = 0; n < 2u; ++n)
+            {
+                MatB b;
+                coopMatLoad(b, w16, uint(pc.wOff) + tap * 1024u + k * 512u + n * 16u, 32u,
+                            gl_CooperativeMatrixLayoutRowMajor);
+                for (int s = 0; s < 4; ++s) acc[s][n] = coopMatMulAdd(a[s], b, acc[s][n]);
+            }
+        }
+    }
+
+    for (uint s = 0; s < 4u; ++s)
+    {
+        ivec2 p = origin + ivec2(int(s & 1u) * 16, int(row0 + (s >> 1)));
+        if (p.y >= pc.size.y || p.x >= pc.size.x) continue;
+        uint base = uint(p.y * pc.size.x + p.x) * 32u;
+        for (uint n = 0; n < 2u; ++n)
+        {
+            MatCh h = MatCh(acc[s][n]);
+            coopMatStore(h, actOut16, base + n * 16u, 32u, gl_CooperativeMatrixLayoutRowMajor);
+        }
+    }
+}

@@ -114,6 +114,10 @@ void Game::Update()
 	{
 		m_denoiseOnGpu = !m_denoiseOnGpu;
 	}
+	if (g_theApp->WasKeyJustPressed('M'))
+	{
+		g_theRTPath->SetNeuralDenoiseCoopMat(!g_theRTPath->GetNeuralDenoiseCoopMat());
+	}
 
 	if (g_theDevConsole->GetMode() == OPEN_FULL)
 	{
@@ -210,8 +214,9 @@ void Game::Render() const
 	if (!m_useDenoiser)
 		snprintf(dnBuf, sizeof(dnBuf), " DENOISE [B]: off");
 	else if (m_denoiseOnGpu)
-		snprintf(dnBuf, sizeof(dnBuf), " DENOISE [B]: GPU %.2f ms [G]",
-		         g_theRTPath->GetNeuralDenoiseMs());
+		snprintf(dnBuf, sizeof(dnBuf), " DENOISE [B]: GPU %.2f ms [G]   mid: %s [M]",
+		         g_theRTPath->GetNeuralDenoiseMs(),
+		         g_theRTPath->GetNeuralDenoiseCoopMat() ? "tensor core" : "fp32 shader");
 	else if (g_theDenoiser)
 		snprintf(dnBuf, sizeof(dnBuf), " DENOISE [B]: CPU %.1f ms [G]",
 		         g_theDenoiser->LastInferenceMs());
@@ -313,6 +318,7 @@ void Game::PrintGameControlToDevConsole()
 	g_theDevConsole->AddLine(Rgba8::CYAN, "Shift / A button Increase speed by a factor of 10 while held");
 	g_theDevConsole->AddLine(Rgba8::CYAN, "B - Toggle denoiser");
 	g_theDevConsole->AddLine(Rgba8::CYAN, "G - Denoise on GPU / CPU");
+	g_theDevConsole->AddLine(Rgba8::CYAN, "M - GPU denoiser mid layers: tensor core / fp32 shader");
 	g_theDevConsole->AddLine(Rgba8::CYAN, "P - Pause the game");
 	g_theDevConsole->AddLine(Rgba8::CYAN, "O - Single step frame");
 	g_theDevConsole->AddLine(Rgba8::CYAN, "T - Slow motion mode");

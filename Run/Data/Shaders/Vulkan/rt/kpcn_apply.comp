@@ -25,6 +25,7 @@ void main()
     for (int c = 0; c < 4; ++c)
     {
         uvec4 pk = actIn[src + c];
+        pk &= ~(((pk >> 15) & 0x00010001u) * 0xFFFFu);  // ReLU of the last mid layer (no-op if already applied)
         vec2 h[4] = vec2[4](unpackHalf2x16(pk.x), unpackHalf2x16(pk.y),
                             unpackHalf2x16(pk.z), unpackHalf2x16(pk.w));
         for (int j = 0; j < 8; ++j)

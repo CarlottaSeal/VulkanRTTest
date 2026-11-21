@@ -357,6 +357,7 @@ void App::Startup()
 		g_theRTPath->CreateNeuralDenoiser("Data/Models/denoiser_kpcn.weights",
 		                                  "Data/Shaders/Vulkan/rt/kpcn_conv_in.comp.spv",
 		                                  "Data/Shaders/Vulkan/rt/kpcn_conv_mid.comp.spv",
+		                                  "Data/Shaders/Vulkan/rt/kpcn_conv_mid_cm.comp.spv",
 		                                  "Data/Shaders/Vulkan/rt/kpcn_apply.comp.spv",
 		                                  "Data/Shaders/Vulkan/rt/kpcn_temporal.comp.spv");
 
