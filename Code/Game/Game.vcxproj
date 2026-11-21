@@ -149,11 +149,12 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>$(SolutionDir)Code/;$(SolutionDir)../Engine/Code/;$(VULKAN_SDK)\Lib</AdditionalLibraryDirectories>
-      <AdditionalDependencies>vulkan-1.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(SolutionDir)Code/;$(SolutionDir)../Engine/Code/;$(VULKAN_SDK)\Lib;$(SolutionDir)Code/ThirdParty/onnxruntime/lib</AdditionalLibraryDirectories>
+      <AdditionalDependencies>vulkan-1.lib;onnxruntime.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <PostBuildEvent>
-      <Command>xcopy /Y /F /I "$(TargetPath)" "$(SolutionDir)Run"</Command>
+      <Command>xcopy /Y /F /I "$(TargetPath)" "$(SolutionDir)Run"
+xcopy /Y /F /I "$(SolutionDir)Code\ThirdParty\onnxruntime\lib\*.dll" "$(SolutionDir)Run"</Command>
     </PostBuildEvent>
     <PostBuildEvent>
       <Message>Copying $(TargetFileName) to $(SolutionDir)Run...</Message>
@@ -175,11 +176,12 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalLibraryDirectories>$(SolutionDir)Code/;$(SolutionDir)../Engine/Code/;$(VULKAN_SDK)\Lib</AdditionalLibraryDirectories>
-      <AdditionalDependencies>vulkan-1.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(SolutionDir)Code/;$(SolutionDir)../Engine/Code/;$(VULKAN_SDK)\Lib;$(SolutionDir)Code/ThirdParty/onnxruntime/lib</AdditionalLibraryDirectories>
+      <AdditionalDependencies>vulkan-1.lib;onnxruntime.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
     <PostBuildEvent>
-      <Command>xcopy /Y /F /I "$(TargetPath)" "$(SolutionDir)Run"</Command>
+      <Command>xcopy /Y /F /I "$(TargetPath)" "$(SolutionDir)Run"
+xcopy /Y /F /I "$(SolutionDir)Code\ThirdParty\onnxruntime\lib\*.dll" "$(SolutionDir)Run"</Command>
     </PostBuildEvent>
     <PostBuildEvent>
       <Message>Copying $(TargetFileName) to $(SolutionDir)Run...</Message>
@@ -196,6 +198,7 @@
     <ClCompile Include="Game.cpp" />
     <ClCompile Include="Gamecommon.cpp" />
     <ClCompile Include="Main_Windows.cpp" />
+    <ClCompile Include="NeuralDenoiser.cpp" />
     <ClCompile Include="Player.cpp" />
     <ClCompile Include="Prop.cpp" />
   </ItemGroup>
@@ -205,6 +208,7 @@
     <ClInclude Include="Entity.hpp" />
     <ClInclude Include="Game.hpp" />
     <ClInclude Include="Gamecommon.hpp" />
+    <ClInclude Include="NeuralDenoiser.hpp" />
     <ClInclude Include="Player.hpp" />
     <ClInclude Include="Prop.hpp" />
     <ClInclude Include="resource.h" />

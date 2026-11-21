@@ -17,8 +17,13 @@
 #include "Engine/Input/KeyButtonState.hpp"
 #include "Engine/Input/InputSystem.hpp"
 #include "Engine/Audio/AudioSystem.hpp"
+#include <atomic>
+#include <condition_variable>
+#include <thread>
+#include "Engine/Job/JobSystem.h"
 
 #include "Game/App.hpp"
+#include "Game/NeuralDenoiser.hpp"
 #include "Game/Game.hpp"
 #include "Game/Gamecommon.hpp"
 #include "Game/EngineBuildPreferences.hpp"
@@ -29,6 +34,7 @@ App* g_theApp = nullptr;
 Renderer* g_theRenderer = nullptr;
 VulkanDeferredPath* g_theDeferred = nullptr;
 VulkanRTPath* g_theRTPath = nullptr;
+NeuralDenoiser* g_theDenoiser = nullptr;
 InputSystem* g_theInput = nullptr;
 //AudioSystem* g_theAudio = nullptr;
 Window* g_theWindow = nullptr;
@@ -359,6 +365,19 @@ void App::Startup()
 		                              "Data/Shaders/Vulkan/rt/shadowmiss.rmiss.spv");
 		g_theRTPath->CreateSBT();
 		g_theRTPath->UpdateDescriptors(s_sceneTLAS, s_sponzaBLAS);
+
+		// One worker drives the inference; ORT's own pool does the math.
+		g_theJobSystem = new JobSystem(JobSystemConfig{ 1, 0 });
+		g_theJobSystem->Startup();
+
+		g_theDenoiser = new NeuralDenoiser();
+		int ortThreads = (int)std::thread::hardware_concurrency() / 2;
+		if (ortThreads < 1) ortThreads = 1;
+		if (!g_theDenoiser->Load(L"Data/Models/denoiser_kpcn.onnx", ortThreads))
+		{
+			delete g_theDenoiser;
+			g_theDenoiser = nullptr;
+		}
 	}
 #endif
 
@@ -376,6 +395,14 @@ void App::Shutdown()
 	g_theGame = nullptr;
 
 #ifdef ENGINE_VULKAN_RENDERER
+	if (g_theJobSystem) { g_theJobSystem->Shutdown(); delete g_theJobSystem; g_theJobSystem = nullptr; }
+	if (g_theDenoiser)
+	{
+		g_theDenoiser->ForgetInFlightJob();
+		g_theDenoiser->Shutdown();
+		delete g_theDenoiser;
+		g_theDenoiser = nullptr;
+	}
 	if (g_theRTPath)   { g_theRTPath->Shutdown();   delete g_theRTPath;   g_theRTPath   = nullptr; }
 	if (g_theDeferred) { g_theDeferred->Shutdown(); delete g_theDeferred; g_theDeferred = nullptr; }
 #endif

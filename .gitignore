@@ -51,3 +51,8 @@ Protogame3D.sln
 
 # Sponza assets (~186MB; user fetches from jimmiebergmann/Sponza)
 Run/Data/Models/Sponza/
+
+# ONNX Runtime (Code/ThirdParty/get_onnxruntime.ps1) and the Python env for ml/
+Code/ThirdParty/onnxruntime/
+ml/.venv/
+__pycache__/

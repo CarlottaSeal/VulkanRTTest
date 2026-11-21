@@ -28,6 +28,9 @@
 #include <vector>
 #include <cmath>
 #include "Engine/Renderer/VulkanRenderer.h"
+#include "Game/NeuralDenoiser.hpp"
+
+extern NeuralDenoiser* g_theDenoiser;
 #include "Engine/Renderer/VulkanDeferredPath.h"
 #include "Engine/Renderer/VulkanRTPath.h"
 #include "Engine/Audio/AudioSystem.hpp"
@@ -174,6 +177,10 @@ void Game::Update()
 	{
 		m_useRTPath = !m_useRTPath;
 	}
+	if (g_theApp->WasKeyJustPressed('B'))
+	{
+		m_useDenoiser = !m_useDenoiser;
+	}
 
 	if (g_theDevConsole->GetMode() == OPEN_FULL)
 	{
@@ -232,7 +239,10 @@ void Game::Render() const
 			IntVec2 winDim = g_theWindow->GetClientDimensions();
 			const uint32_t w = (uint32_t)winDim.x;
 			const uint32_t h = (uint32_t)winDim.y;
+			VulkanRTPath::DenoiseFrame dn = g_theRTPath->BeginDenoiseFrame();
+			bool denoised = m_useDenoiser && g_theDenoiser && g_theDenoiser->Update(dn);
 			g_theRTPath->TraceRays(cmd, w, h);
+			g_theRTPath->EndDenoiseFrame(cmd, denoised);
 			g_theRTPath->BlitToSwapImage(cmd, w, h, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
 			if (g_theDeferred)
@@ -253,6 +263,17 @@ void Game::Render() const
 				         (float)m_gameClock->GetDeltaSeconds() * 1000.f);
 				DebugAddScreenText(fpsBuf,
 				                   m_screenCamera.GetOrthographicTopRight() - Vec2(580.f, 70.f),
+				                   12.f, Vec2::ZERO, 0.f);
+
+				char dnBuf[128];
+				if (!g_theDenoiser)
+					snprintf(dnBuf, sizeof(dnBuf), " DENOISE [B]: no model");
+				else
+					snprintf(dnBuf, sizeof(dnBuf), " DENOISE [B]: %s   infer: %.1f ms   job: %.1f ms",
+					         m_useDenoiser ? "on" : "off",
+					         g_theDenoiser->LastInferenceMs(), g_theDenoiser->LastJobMs());
+				DebugAddScreenText(dnBuf,
+				                   m_screenCamera.GetOrthographicTopRight() - Vec2(580.f, 90.f),
 				                   12.f, Vec2::ZERO, 0.f);
 
 				g_theDeferred->BeginForwardOverlay(cmd, swapIdx);
