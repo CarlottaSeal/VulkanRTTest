@@ -198,9 +198,10 @@ void Game::Render() const
 
 	char fpsBuf[96];
 	snprintf(fpsBuf, sizeof(fpsBuf),
-	         " FPS: %.1f   dt: %.2f ms",
+	         " FPS: %.1f   dt: %.2f ms   trace: %.2f ms",
 	         (float)m_gameClock->GetFrameRate(),
-	         (float)m_gameClock->GetDeltaSeconds() * 1000.f);
+	         (float)m_gameClock->GetDeltaSeconds() * 1000.f,
+	         g_theRTPath->GetTraceMs());
 	DebugAddScreenText(fpsBuf,
 	                   m_screenCamera.GetOrthographicTopRight() - Vec2(580.f, 70.f),
 	                   12.f, Vec2::ZERO, 0.f);
