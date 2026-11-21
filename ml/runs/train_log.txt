@@ -1,0 +1,14 @@
+﻿200 captured, 178 kept, 161 train / 17 val, loaded in 6s
+step   500  loss 0.0152  val PSNR noisy 16.15 box 24.18 model 26.73  (18s)  saved
+step  1000  loss 0.0128  val PSNR noisy 16.15 box 24.18 model 27.14  (37s)  saved
+step  1500  loss 0.0136  val PSNR noisy 16.15 box 24.18 model 27.61  (56s)  saved
+step  2000  loss 0.0127  val PSNR noisy 16.15 box 24.18 model 27.88  (75s)  saved
+step  2500  loss 0.0117  val PSNR noisy 16.15 box 24.18 model 28.03  (95s)  saved
+step  3000  loss 0.0119  val PSNR noisy 16.15 box 24.18 model 28.11  (114s)  saved
+step  3500  loss 0.0141  val PSNR noisy 16.15 box 24.18 model 28.18  (134s)  saved
+step  4000  loss 0.0115  val PSNR noisy 16.15 box 24.18 model 28.25  (153s)  saved
+step  4500  loss 0.0138  val PSNR noisy 16.15 box 24.18 model 28.27  (173s)  saved
+step  5000  loss 0.0159  val PSNR noisy 16.15 box 24.18 model 28.30  (193s)  saved
+step  5500  loss 0.0125  val PSNR noisy 16.15 box 24.18 model 28.30  (212s)  saved
+step  6000  loss 0.0095  val PSNR noisy 16.15 box 24.18 model 28.30  (232s)
+best val PSNR 28.30 dB -> runs\kpcn.pt
