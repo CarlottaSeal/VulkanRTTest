@@ -1,0 +1,49 @@
+#version 450
+// KPCN layer 1: features (log1p(light), albedo) -> 32 channels, 3x3 conv,
+// zero padding, ReLU. One invocation per pixel computes all 32 outputs.
+// Weights: [tap 9][in 6][out 32] floats, then 32 biases (see export_kpcn.py).
+// Activations: 32 halves per pixel, packed as 4 uvec4.
+
+layout(local_size_x = 16, local_size_y = 8) in;
+
+layout(set = 0, binding = 0, rgba16f) uniform readonly image2D lightImage;
+layout(set = 0, binding = 1, rgba8)   uniform readonly image2D albedoImage;
+layout(set = 0, binding = 4) writeonly buffer ActOut { uvec4 actOut[]; };
+layout(set = 0, binding = 5) readonly  buffer Weights { vec4 w[]; };
+
+layout(push_constant) uniform PC { ivec2 size; int wOff; int bOff; } pc;
+
+void main()
+{
+    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+    if (p.x >= pc.size.x || p.y >= pc.size.y) return;
+
+    vec4 acc[8];
+    for (int o = 0; o < 8; ++o) acc[o] = w[pc.bOff + o];
+
+    for (int ky = 0; ky < 3; ++ky)
+    for (int kx = 0; kx < 3; ++kx)
+    {
+        ivec2 q = p + ivec2(kx - 1, ky - 1);
+        if (any(lessThan(q, ivec2(0))) || any(greaterThanEqual(q, pc.size))) continue;
+
+        vec3 light  = log(1.0 + max(imageLoad(lightImage, q).rgb, vec3(0.0)));
+        vec3 albedo = imageLoad(albedoImage, q).rgb;
+        float f[6] = float[6](light.r, light.g, light.b, albedo.r, albedo.g, albedo.b);
+
+        int tap = ky * 3 + kx;
+        for (int i = 0; i < 6; ++i)
+        {
+            int wb = pc.wOff + (tap * 6 + i) * 8;
+            for (int o = 0; o < 8; ++o) acc[o] += f[i] * w[wb + o];
+        }
+    }
+
+    int base = (p.y * pc.size.x + p.x) * 4;
+    for (int c = 0; c < 4; ++c)
+    {
+        vec4 a = max(acc[2 * c], 0.0), b = max(acc[2 * c + 1], 0.0);
+        actOut[base + c] = uvec4(packHalf2x16(a.xy), packHalf2x16(a.zw),
+                                 packHalf2x16(b.xy), packHalf2x16(b.zw));
+    }
+}

@@ -57,7 +57,8 @@ private:
 	bool m_useMultithreading = false; // F3 toggles secondary-cmd-buffer recording on subpass 0
 	int  m_pieceCount        = 16;    // F4 cycles {16, 256, 1024, 4096} for MT scaling tests
 	bool m_useRTPath         = false; // V: RT path
-	bool m_useDenoiser       = true;  // B: CPU neural denoiser in RT path
+	bool m_useDenoiser       = true;  // B: neural denoiser in RT path
+	bool m_denoiseOnGpu      = true;  // G: Vulkan compute KPCN vs ONNX Runtime on the CPU
 	mutable uint32_t m_rtFrameId = 0;
 	bool m_isSlowMo;
 	bool m_isUsingUserTimeScale;

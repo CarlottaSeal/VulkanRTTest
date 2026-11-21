@@ -196,6 +196,10 @@ void Game::Update()
 	{
 		m_useDenoiser = !m_useDenoiser;
 	}
+	if (g_theApp->WasKeyJustPressed('G'))
+	{
+		m_denoiseOnGpu = !m_denoiseOnGpu;
+	}
 
 	if (g_theDevConsole->GetMode() == OPEN_FULL)
 	{
@@ -259,9 +263,17 @@ void Game::Render() const
 			IntVec2 winDim = g_theWindow->GetClientDimensions();
 			const uint32_t w = (uint32_t)winDim.x;
 			const uint32_t h = (uint32_t)winDim.y;
-			bool denoised = !capturing && m_useDenoiser && g_theDenoiser && g_theDenoiser->Update(dn);
 			g_theRTPath->TraceRays(cmd, w, h);
-			g_theRTPath->EndDenoiseFrame(cmd, denoised);
+			const bool gpuDenoise = !capturing && m_useDenoiser && m_denoiseOnGpu && g_theRTPath->HasNeuralDenoiser();
+			if (gpuDenoise)
+			{
+				g_theRTPath->RunNeuralDenoise(cmd);
+			}
+			else
+			{
+				bool denoised = !capturing && m_useDenoiser && !m_denoiseOnGpu && g_theDenoiser && g_theDenoiser->Update(dn);
+				g_theRTPath->EndDenoiseFrame(cmd, denoised);
+			}
 			g_theRTPath->BlitToSwapImage(cmd, w, h, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
 
 			if (g_theDeferred)
@@ -285,12 +297,16 @@ void Game::Render() const
 				                   12.f, Vec2::ZERO, 0.f);
 
 				char dnBuf[128];
-				if (!g_theDenoiser)
-					snprintf(dnBuf, sizeof(dnBuf), " DENOISE [B]: no model");
+				if (!m_useDenoiser)
+					snprintf(dnBuf, sizeof(dnBuf), " DENOISE [B]: off");
+				else if (m_denoiseOnGpu)
+					snprintf(dnBuf, sizeof(dnBuf), " DENOISE [B]: GPU %.2f ms [G]",
+					         g_theRTPath->GetNeuralDenoiseMs());
+				else if (g_theDenoiser)
+					snprintf(dnBuf, sizeof(dnBuf), " DENOISE [B]: CPU %.1f ms [G]",
+					         g_theDenoiser->LastInferenceMs());
 				else
-					snprintf(dnBuf, sizeof(dnBuf), " DENOISE [B]: %s   infer: %.1f ms   job: %.1f ms",
-					         m_useDenoiser ? "on" : "off",
-					         g_theDenoiser->LastInferenceMs(), g_theDenoiser->LastJobMs());
+					snprintf(dnBuf, sizeof(dnBuf), " DENOISE [B]: on   [G] CPU: no model");
 				DebugAddScreenText(dnBuf,
 				                   m_screenCamera.GetOrthographicTopRight() - Vec2(580.f, 90.f),
 				                   12.f, Vec2::ZERO, 0.f);

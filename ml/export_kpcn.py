@@ -46,6 +46,48 @@ class KPCN(nn.Module):
         return out
 
 
+def gpu_weights(model):
+    """Flat float32 array in the layout the kpcn_*.comp shaders read:
+    conv_in  [tap 9][in 6][out 32], bias 32
+    conv_mid [tap 9][in 32][out 32], bias 32   (x3)
+    conv_out [in 32][out 28], bias 28          (25 used, padded to vec4)
+    """
+    convs = [m for m in model.net if isinstance(m, nn.Conv2d)]
+    parts = []
+    for conv in convs[:-1]:
+        w = conv.weight.detach().numpy()                      # [out, in, 3, 3]
+        parts += [w.transpose(2, 3, 1, 0).reshape(-1), conv.bias.detach().numpy()]
+    w = convs[-1].weight.detach().numpy()[:, :, 0, 0]          # [25, 32]
+    w = np.pad(w, ((0, 3), (0, 0))).T                          # [32, 28]
+    b = np.pad(convs[-1].bias.detach().numpy(), (0, 3))
+    parts += [w.reshape(-1), b]
+    return np.concatenate(parts).astype(np.float32)
+
+
+def gpu_reference(flat, x):
+    """numpy forward pass that indexes `flat` exactly like the shaders."""
+    light, albedo = x[0, :3], x[0, 3:]
+    act = np.concatenate([np.log1p(np.clip(light, 0, None)), albedo]).transpose(1, 2, 0)  # HWC
+    h, w = act.shape[:2]
+    off = 0
+    for cin in (6, 32, 32, 32):
+        wt = flat[off:off + 9 * cin * 32].reshape(9, cin, 32); off += 9 * cin * 32
+        b = flat[off:off + 32]; off += 32
+        p = np.pad(act, ((1, 1), (1, 1), (0, 0)))
+        out = np.broadcast_to(b, (h, w, 32)).copy()
+        for tap in range(9):
+            ky, kx = divmod(tap, 3)
+            out += p[ky:ky + h, kx:kx + w] @ wt[tap]
+        act = np.maximum(out, 0).astype(np.float16).astype(np.float32)  # fp16 storage
+    wt = flat[off:off + 32 * 28].reshape(32, 28); off += 32 * 28
+    logits = (act @ wt + flat[off:off + 28])[..., :25]
+    e = np.exp(logits - logits.max(-1, keepdims=True))
+    k = e / e.sum(-1, keepdims=True)
+    pl = np.pad(light.transpose(1, 2, 0), ((2, 2), (2, 2), (0, 0)), mode="edge")
+    out = sum(k[..., i:i + 1] * pl[i // 5:i // 5 + h, i % 5:i % 5 + w] for i in range(25))
+    return out.transpose(2, 0, 1)[None]
+
+
 def box5(light):
     p = np.pad(light, ((0, 0), (0, 0), (2, 2), (2, 2)), mode="edge")
     h, w = light.shape[2:]
@@ -69,7 +111,16 @@ def main():
                       opset_version=17, dynamo=False)
     print("wrote", args.out)
 
+    flat = gpu_weights(model)
+    wpath = args.out.replace(".onnx", ".weights")
+    flat.tofile(wpath)
+    print("wrote", wpath, f"({flat.size} floats)")
+
     if args.check:
+        x = np.random.rand(1, 6, 37, 53).astype(np.float32) * 4
+        with torch.no_grad():
+            t = model(torch.from_numpy(x)).numpy()
+        print("gpu-layout reference vs torch max abs diff:", np.abs(gpu_reference(flat, x) - t).max())
         import onnxruntime as ort
         sess = ort.InferenceSession(args.out, providers=["CPUExecutionProvider"])
         x = np.random.rand(1, 6, 123, 217).astype(np.float32) * 4

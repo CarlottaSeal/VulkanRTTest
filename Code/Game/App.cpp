@@ -367,6 +367,10 @@ void App::Startup()
 		                              "Data/Shaders/Vulkan/rt/shadowmiss.rmiss.spv");
 		g_theRTPath->CreateSBT();
 		g_theRTPath->UpdateDescriptors(s_sceneTLAS, s_sponzaBLAS);
+		g_theRTPath->CreateNeuralDenoiser("Data/Models/denoiser_kpcn.weights",
+		                                  "Data/Shaders/Vulkan/rt/kpcn_conv_in.comp.spv",
+		                                  "Data/Shaders/Vulkan/rt/kpcn_conv_mid.comp.spv",
+		                                  "Data/Shaders/Vulkan/rt/kpcn_apply.comp.spv");
 
 		// One worker drives the inference (ORT's own pool does the math), one
 		// IO thread writes capture samples.
