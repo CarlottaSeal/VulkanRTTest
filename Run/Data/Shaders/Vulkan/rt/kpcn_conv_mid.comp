@@ -1,6 +1,18 @@
 #version 450
 // KPCN layers 2-4: 32 -> 32 channels, 3x3 conv, zero padding, ReLU.
 // Weights: [tap 9][in 32][out 32] floats, then 32 biases.
+//
+// 32x16 output tile per workgroup. The tile plus a 1-pixel halo of input
+// activations is staged in shared memory once (34x18 px x 32 halves, 39 KB),
+// so the nine taps read shared memory instead of each re-reading global.
+// Each invocation owns 2x2 pixels spaced 16 and 8 apart, so neighbouring
+// invocations read neighbouring uvec4s; every weight vec4 loaded feeds
+// 4 pixels x 4 outputs = 16 FMAs.
+
+#define TW 32
+#define TH 16
+#define SW (TW + 2)
+#define SH (TH + 2)
 
 layout(local_size_x = 16, local_size_y = 8) in;
 
@@ -10,41 +22,67 @@ layout(set = 0, binding = 5) readonly  buffer Weights { vec4 w[]; };
 
 layout(push_constant) uniform PC { ivec2 size; int wOff; int bOff; } pc;
 
+shared uvec4 tile[4][SH][SW];  // [8-channel chunk][y][x]
+
 void main()
 {
-    ivec2 p = ivec2(gl_GlobalInvocationID.xy);
-    if (p.x >= pc.size.x || p.y >= pc.size.y) return;
+    const ivec2 origin = ivec2(gl_WorkGroupID.xy) * ivec2(TW, TH);
+    const uint  tid    = gl_LocalInvocationIndex;
 
-    vec4 acc[8];
-    for (int o = 0; o < 8; ++o) acc[o] = w[pc.bOff + o];
+    for (uint i = tid; i < 4u * SH * SW; i += 128u)
+    {
+        uint c = i / (SH * SW), r = i % (SH * SW);
+        ivec2 q = origin + ivec2(r % SW, r / SW) - 1;
+        bool inside = all(greaterThanEqual(q, ivec2(0))) && all(lessThan(q, pc.size));
+        tile[c][r / SW][r % SW] = inside ? actIn[(q.y * pc.size.x + q.x) * 4 + int(c)] : uvec4(0);
+    }
+    barrier();
+
+    const ivec2 t = ivec2(gl_LocalInvocationID.xy);
+    vec4 acc[4][8];  // [pixel][out vec4]
+    for (int o = 0; o < 8; ++o)
+    {
+        vec4 b = w[pc.bOff + o];
+        for (int px = 0; px < 4; ++px) acc[px][o] = b;
+    }
 
     for (int ky = 0; ky < 3; ++ky)
     for (int kx = 0; kx < 3; ++kx)
     {
-        ivec2 q = p + ivec2(kx - 1, ky - 1);
-        if (any(lessThan(q, ivec2(0))) || any(greaterThanEqual(q, pc.size))) continue;
-
-        int src = (q.y * pc.size.x + q.x) * 4;
         int tap = ky * 3 + kx;
         for (int c = 0; c < 4; ++c)
         {
-            uvec4 pk = actIn[src + c];
-            vec2 h[4] = vec2[4](unpackHalf2x16(pk.x), unpackHalf2x16(pk.y),
-                                unpackHalf2x16(pk.z), unpackHalf2x16(pk.w));
+            vec2 h[4][4];  // [pixel][half pair]
+            for (int px = 0; px < 4; ++px)
+            {
+                uvec4 pk = tile[c][t.y + (px >> 1) * 8 + ky][t.x + (px & 1) * 16 + kx];
+                h[px][0] = unpackHalf2x16(pk.x);
+                h[px][1] = unpackHalf2x16(pk.y);
+                h[px][2] = unpackHalf2x16(pk.z);
+                h[px][3] = unpackHalf2x16(pk.w);
+            }
             for (int j = 0; j < 8; ++j)
             {
-                float v = h[j >> 1][j & 1];
                 int wb = pc.wOff + (tap * 32 + c * 8 + j) * 8;
-                for (int o = 0; o < 8; ++o) acc[o] += v * w[wb + o];
+                for (int o = 0; o < 8; ++o)
+                {
+                    vec4 wv = w[wb + o];
+                    for (int px = 0; px < 4; ++px) acc[px][o] += h[px][j >> 1][j & 1] * wv;
+                }
             }
         }
     }
 
-    int base = (p.y * pc.size.x + p.x) * 4;
-    for (int c = 0; c < 4; ++c)
+    for (int px = 0; px < 4; ++px)
     {
-        vec4 a = max(acc[2 * c], 0.0), b = max(acc[2 * c + 1], 0.0);
-        actOut[base + c] = uvec4(packHalf2x16(a.xy), packHalf2x16(a.zw),
-                                 packHalf2x16(b.xy), packHalf2x16(b.zw));
+        ivec2 p = origin + t + ivec2((px & 1) * 16, (px >> 1) * 8);
+        if (p.x >= pc.size.x || p.y >= pc.size.y) continue;
+        int base = (p.y * pc.size.x + p.x) * 4;
+        for (int c = 0; c < 4; ++c)
+        {
+            vec4 a = max(acc[px][2 * c], 0.0), b = max(acc[px][2 * c + 1], 0.0);
+            actOut[base + c] = uvec4(packHalf2x16(a.xy), packHalf2x16(a.zw),
+                                     packHalf2x16(b.xy), packHalf2x16(b.zw));
+        }
     }
 }
