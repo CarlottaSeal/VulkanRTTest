@@ -26,9 +26,8 @@ layout(set = 0, binding = 12) readonly buffer Lights       { vec4  d[]; }  lbuf;
 layout(set = 0, binding = 13) buffer Reservoirs0           { int   d[]; }  resA;
 layout(set = 0, binding = 14) buffer Reservoirs1           { int   d[]; }  resB;
 layout(set = 0, binding = 16, rgba8) uniform image2D albedoImage;
-layout(set = 0, binding = 17, rgba16f) uniform image2D momentsImage;
-layout(set = 0, binding = 18, r32ui) uniform uimage2D matIdImage;
-layout(set = 0, binding = 19, r32f)  uniform image2D  depthImage;
+layout(set = 0, binding = 17, r32ui) uniform uimage2D matIdImage;
+layout(set = 0, binding = 18, r32f)  uniform image2D  depthImage;
 
 layout(location = 0) rayPayloadInEXT vec3 payloadColor;
 hitAttributeEXT vec2 attribs;
@@ -336,42 +335,13 @@ void main()
 
     // Hemisphere ambient as a cheap stand-in for sky / multi-bounce GI —
     // ReSTIR DI is direct-only, so without this any surface not hit by a
-    // point light is pure black. NB: composite multiplies by albedo, so
-    // the ambient here must also be albedo-demodulated.
+    // point light is pure black. NB: raygen multiplies by albedo, so the
+    // ambient here must also be albedo-demodulated.
     const vec3  skyColor    = vec3(0.50, 0.65, 0.85);
     const vec3  groundColor = vec3(0.30, 0.25, 0.22);
     const float upDot       = clamp(shadingN.z * 0.5 + 0.5, 0.0, 1.0);
     const vec3  ambient     = mix(groundColor, skyColor, upDot) * 0.15;
     const vec3  finalColor  = ambient + lightContrib;
-
-    // Welford EWMA — storing M2 directly would cancel against M1² in fp16.
-    // momentsImage layout: r=M1, g=variance, b=historyLen, a=variance copy.
-    {
-        const float lum = dot(finalColor, vec3(0.299, 0.587, 0.114));
-        const vec4  prevMoments = imageLoad(momentsImage, ivec2(gl_LaunchIDEXT.xy));
-        const float prevM1   = prevMoments.r;
-        const float prevVar  = prevMoments.g;
-        const float prevHist = prevMoments.b;
-        const bool  prevSurfaceMatch = (prev.M > 0
-                                     && similarSurface(prev.normal, prev.depth, N, hitDepth));
-        const bool  momentsValid = prevSurfaceMatch
-                                && prevHist >= 1.0
-                                && prevHist <= 64.0;
-        float histLen, M1, variance;
-        if (momentsValid) {
-            histLen = min(prevHist + 1.0, 32.0);
-            float a = max(1.0 / histLen, 0.05);
-            float delta = lum - prevM1;
-            M1       = prevM1 + a * delta;
-            variance = (1.0 - a) * (prevVar + a * delta * delta);
-        } else {
-            histLen  = 1.0;
-            M1       = lum;
-            variance = 0.0;
-        }
-        imageStore(momentsImage, ivec2(gl_LaunchIDEXT.xy),
-                   vec4(M1, variance, histLen, variance));
-    }
 
     // alpha=1 = real surface (miss writes 0 for sky).
     imageStore(albedoImage, ivec2(gl_LaunchIDEXT.xy), vec4(baseColor, 1.0));

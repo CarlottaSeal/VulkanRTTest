@@ -2,8 +2,8 @@
 #extension GL_EXT_ray_tracing : require
 
 layout(set = 0, binding = 16, rgba8) uniform image2D albedoImage;
-layout(set = 0, binding = 18, r32ui) uniform uimage2D matIdImage;
-layout(set = 0, binding = 19, r32f)  uniform image2D  depthImage;
+layout(set = 0, binding = 17, r32ui) uniform uimage2D matIdImage;
+layout(set = 0, binding = 18, r32f)  uniform image2D  depthImage;
 layout(location = 0) rayPayloadInEXT vec3 payloadColor;
 
 void main()

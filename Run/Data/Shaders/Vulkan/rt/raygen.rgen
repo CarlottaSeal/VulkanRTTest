@@ -20,8 +20,7 @@ layout(set = 0, binding = 13) buffer Reservoirs0 { int d[]; } resA;
 layout(set = 0, binding = 14) buffer Reservoirs1 { int d[]; } resB;
 layout(set = 0, binding = 15, rgba16f) uniform image2D historyImage;
 layout(set = 0, binding = 16, rgba8)   uniform image2D albedoImage;
-layout(set = 0, binding = 17, rgba16f) uniform image2D momentsImage;
-layout(set = 0, binding = 18, r32ui)   uniform uimage2D matIdImage;
+layout(set = 0, binding = 17, r32ui)   uniform uimage2D matIdImage;
 
 layout(location = 0) rayPayloadEXT vec3 payloadColor;
 
@@ -51,57 +50,16 @@ void main()
 
     payloadColor = min(payloadColor, vec3(4.0));
 
-    // Sky pass-through.
+    // historyImage keeps the noisy albedo-demodulated light (HDR) for the
+    // denoiser; alpha=0 marks sky.
     vec4 albedoRGBA = imageLoad(albedoImage, px);
-    if (albedoRGBA.a < 0.5) {
-        imageStore(historyImage, px, vec4(payloadColor, 0.0));
-        return;
-    }
+    const bool sky = albedoRGBA.a < 0.5;
+    imageStore(historyImage, px, vec4(payloadColor, sky ? 0.0 : 1.0));
 
-    // historyLen >= 4: 3x3 gaussian prefilter the cross-frame variance.
-    // historyLen <  4 (disocclusion): fall back to 7x7 spatial luma variance,
-    // since single-frame moments give ~0 and would leave atrous tight.
-    vec4  m       = imageLoad(momentsImage, px);
-    float histLen = m.b;
-    float variance;
-
-    if (histLen >= 4.0) {
-        const float k[3] = float[3](1.0/4.0, 1.0/2.0, 1.0/4.0);
-        float vSum = 0.0, kSum = 0.0;
-        for (int dy = -1; dy <= 1; ++dy) {
-            for (int dx = -1; dx <= 1; ++dx) {
-                ivec2 npx = px + ivec2(dx, dy);
-                if (npx.x < 0 || npx.y < 0 ||
-                    npx.x >= launchSize.x || npx.y >= launchSize.y) continue;
-                float w  = k[dx + 1] * k[dy + 1];
-                vec4  nm = imageLoad(momentsImage, npx);
-                if (nm.b < 4.0) continue;       // skip stale neighbors
-                vSum += w * nm.a;
-                kSum += w;
-            }
-        }
-        variance = (kSum > 0.0) ? (vSum / kSum) : m.a;
-    } else {
-        float sumL = 0.0, sumL2 = 0.0, n = 0.0;
-        for (int dy = -3; dy <= 3; ++dy) {
-            for (int dx = -3; dx <= 3; ++dx) {
-                ivec2 npx = px + ivec2(dx, dy);
-                if (npx.x < 0 || npx.y < 0 ||
-                    npx.x >= launchSize.x || npx.y >= launchSize.y) continue;
-                vec3 nC = imageLoad(historyImage, npx).rgb;
-                float nL = dot(nC, vec3(0.299, 0.587, 0.114));
-                sumL  += nL;
-                sumL2 += nL * nL;
-                n     += 1.0;
-            }
-        }
-        variance = m.a;
-        if (n > 0.0) {
-            float meanL = sumL / n;
-            float spatialVar = max(sumL2 / n - meanL * meanL, 0.0);
-            variance = max(variance, spatialVar);
-        }
-    }
-
-    imageStore(historyImage, px, vec4(payloadColor, variance));
+    vec3 final = sky ? payloadColor : payloadColor * albedoRGBA.rgb;
+    // Luminance-preserving Reinhard: keep chroma, compress only Y.
+    float Y   = max(dot(final, vec3(0.299, 0.587, 0.114)), 1e-4);
+    float Y_t = Y / (Y + 1.0);
+    vec3  ldr = min(final * (Y_t / Y), vec3(1.0));
+    imageStore(outImage, px, vec4(ldr, 1.0));
 }

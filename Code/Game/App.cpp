@@ -292,8 +292,8 @@ void App::Startup()
 		                         (uint32_t)matDiffuseSlot.size());
 
 		// 16 strong lights — enough for variety but few enough that each
-		// region of the scene is clearly dominated by one or two, so atrous
-		// neighbor averaging doesn't smear different palette tints into grey.
+		// region of the scene is clearly dominated by one or two, so spatial
+		// filtering doesn't smear different palette tints into grey.
 		constexpr uint32_t kNumLights = 16;
 		g_rtNumLights = kNumLights;
 		g_rtLightPositions.clear();
@@ -359,8 +359,6 @@ void App::Startup()
 		                              "Data/Shaders/Vulkan/rt/shadowmiss.rmiss.spv");
 		g_theRTPath->CreateSBT();
 		g_theRTPath->UpdateDescriptors(s_sceneTLAS, s_sponzaBLAS);
-		g_theRTPath->CreateDenoisePipelines("Data/Shaders/Vulkan/rt/atrous.comp.spv",
-		                                    "Data/Shaders/Vulkan/rt/composite.comp.spv");
 	}
 #endif
 
