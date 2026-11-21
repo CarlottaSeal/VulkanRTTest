@@ -10,7 +10,6 @@
 
 class Clock;
 class Entity;
-class StaticMesh;
 
 class Game 
 {
@@ -31,33 +30,15 @@ public:
 	Camera m_screenCamera;
 
 	Entity* m_player;
-	Entity* m_colorCube;
-	Entity* m_rotateCube;
-	Entity* m_rotateSphere;
-	std::vector<Entity*> m_entityList;
-
-	StaticMesh* m_chessKing   = nullptr;
-	StaticMesh* m_chessQueen  = nullptr;
-	StaticMesh* m_chessRook   = nullptr;
-	StaticMesh* m_chessBishop = nullptr;
-	StaticMesh* m_chessKnight = nullptr;
-	StaticMesh* m_chessPawn   = nullptr;
 
 private:
 	void AttractModeUpdate();
 	void AttractModeRender() const;
-	//void UpdateCamera();  //move into m_player
 	void PrintGameControlToDevConsole();
-	void DrawSquareXYGrid(int unit = 100);
 	void DebugRenderSystemInputUpdate();
-	void DebugAddWorldAxisText(Mat44 worldMat);
 
 private:
-	bool m_useForwardPath    = false; // F2 toggles between deferred (default) and forward A/B paths
-	bool m_useMultithreading = false; // F3 toggles secondary-cmd-buffer recording on subpass 0
-	int  m_pieceCount        = 16;    // F4 cycles {16, 256, 1024, 4096} for MT scaling tests
-	bool m_useRTPath         = false; // V: RT path
-	bool m_useDenoiser       = true;  // B: neural denoiser in RT path
+	bool m_useDenoiser       = true;  // B: neural denoiser
 	bool m_denoiseOnGpu      = true;  // G: Vulkan compute KPCN vs ONNX Runtime on the CPU
 	mutable uint32_t m_rtFrameId = 0;
 	bool m_isSlowMo;
@@ -69,8 +50,6 @@ private:
 	SoundPlaybackID m_attractSoundID = MISSING_SOUND_ID;
 
 	float m_varyTime = 0.f;
-
-	std::vector<Vertex_PCU> m_gridVertexes;
 };
 
 

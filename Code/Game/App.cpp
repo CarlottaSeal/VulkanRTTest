@@ -42,11 +42,8 @@ InputSystem* g_theInput = nullptr;
 Window* g_theWindow = nullptr;
 Game* g_theGame = nullptr;
 
-// RT lights, exposed so Game.cpp can debug-draw them and so the camera UBO
-// gets the matching numLights count.
+// Exposed so the camera UBO gets the matching numLights count.
 uint32_t g_rtNumLights = 0;
-std::vector<Vec3>  g_rtLightPositions;
-std::vector<Rgba8> g_rtLightColors;
 
 App::App()
 {
@@ -304,10 +301,6 @@ void App::Startup()
 		// filtering doesn't smear different palette tints into grey.
 		constexpr uint32_t kNumLights = 16;
 		g_rtNumLights = kNumLights;
-		g_rtLightPositions.clear();
-		g_rtLightColors.clear();
-		g_rtLightPositions.reserve(kNumLights);
-		g_rtLightColors.reserve(kNumLights);
 		std::vector<float> lightData(kNumLights * 8);
 		auto frand01 = []() { return (float)rand() / (float)RAND_MAX; };
 		// Discrete saturated palette — random independent RGB channels gave
@@ -336,12 +329,6 @@ void App::Startup()
 			d[5] = kPalette[p][1];
 			d[6] = kPalette[p][2];
 			d[7] = 0.f;
-			g_rtLightPositions.emplace_back(d[0], d[1], d[2]);
-			g_rtLightColors.emplace_back(
-				(unsigned char)(d[4] * 255.f),
-				(unsigned char)(d[5] * 255.f),
-				(unsigned char)(d[6] * 255.f),
-				255);
 		}
 		g_theRTPath->SetLights(lightData.data(), kNumLights);
 
@@ -572,7 +559,7 @@ bool OnQuitEvent(EventArgs& args)
 }
 
 // denoise_capture poses=200 frames=512 dir=Data/DenoiseSet
-// Runs in RT mode (V); the camera is taken over until it finishes.
+// The camera is taken over until it finishes.
 bool OnDenoiseCaptureEvent(EventArgs& args)
 {
 	if (!g_theDenoiseCapture) return false;
@@ -580,7 +567,7 @@ bool OnDenoiseCaptureEvent(EventArgs& args)
 	int frames = args.GetValue("frames", 512);
 	std::string dir = args.GetValue("dir", "Data/DenoiseSet");
 	g_theDenoiseCapture->Start(dir, poses, frames);
-	g_theDevConsole->AddLine(Rgba8::GREEN, Stringf("denoise_capture: %d poses x %d frames -> %s (switch to RT mode with V)",
+	g_theDevConsole->AddLine(Rgba8::GREEN, Stringf("denoise_capture: %d poses x %d frames -> %s",
 	                                               poses, frames, dir.c_str()));
 	return true;
 }

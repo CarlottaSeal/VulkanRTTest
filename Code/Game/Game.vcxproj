@@ -201,7 +201,6 @@ xcopy /Y /F /I "$(SolutionDir)Code\ThirdParty\onnxruntime\lib\*.dll" "$(Solution
     <ClCompile Include="Main_Windows.cpp" />
     <ClCompile Include="NeuralDenoiser.cpp" />
     <ClCompile Include="Player.cpp" />
-    <ClCompile Include="Prop.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="App.hpp" />
@@ -213,7 +212,6 @@ xcopy /Y /F /I "$(SolutionDir)Code\ThirdParty\onnxruntime\lib\*.dll" "$(Solution
     <ClInclude Include="Gamecommon.hpp" />
     <ClInclude Include="NeuralDenoiser.hpp" />
     <ClInclude Include="Player.hpp" />
-    <ClInclude Include="Prop.hpp" />
     <ClInclude Include="resource.h" />
   </ItemGroup>
   <ItemGroup>

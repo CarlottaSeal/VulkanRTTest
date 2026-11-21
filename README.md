@@ -73,7 +73,8 @@ RTX 4080 Laptop, 1600×800, no vsync:
 
 | key | action |
 |---|---|
-| `V` | toggle RT path on / off (default: deferred path) |
+| `B` | denoiser on / off |
+| `G` | denoise on GPU (Vulkan compute) / CPU (ONNX Runtime) |
 | WASD + mouse | fly camera (Igloo: x-forward, y-left, z-up) |
 | `ESC` | quit |
 | ` ` ` (backtick) | dev console |
