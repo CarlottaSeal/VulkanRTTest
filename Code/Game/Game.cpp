@@ -314,8 +314,8 @@ void Game::Render() const
 				{
 					const float* t = g_theRTPath->GetNeuralDenoisePassMs();
 					char passBuf[128];
-					snprintf(passBuf, sizeof(passBuf), " in %.2f mid %.2f %.2f %.2f out %.2f",
-					         t[0], t[1], t[2], t[3], t[4]);
+					snprintf(passBuf, sizeof(passBuf), " in %.2f mid %.2f %.2f %.2f out %.2f tmp %.2f",
+					         t[0], t[1], t[2], t[3], t[4], t[5]);
 					DebugAddScreenText(passBuf,
 					                   m_screenCamera.GetOrthographicTopRight() - Vec2(580.f, 130.f),
 					                   12.f, Vec2::ZERO, 0.f);
