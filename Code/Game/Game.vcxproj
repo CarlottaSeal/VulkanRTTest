@@ -194,6 +194,7 @@ xcopy /Y /F /I "$(SolutionDir)Code\ThirdParty\onnxruntime\lib\*.dll" "$(Solution
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="App.cpp" />
+    <ClCompile Include="DenoiseCapture.cpp" />
     <ClCompile Include="Entity.cpp" />
     <ClCompile Include="Game.cpp" />
     <ClCompile Include="Gamecommon.cpp" />
@@ -204,6 +205,8 @@ xcopy /Y /F /I "$(SolutionDir)Code\ThirdParty\onnxruntime\lib\*.dll" "$(Solution
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="App.hpp" />
+    <ClInclude Include="DenoiseCapture.hpp" />
+    <ClInclude Include="DenoiseCommon.hpp" />
     <ClInclude Include="EngineBuildPreferences.hpp" />
     <ClInclude Include="Entity.hpp" />
     <ClInclude Include="Game.hpp" />

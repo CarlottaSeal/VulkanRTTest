@@ -55,4 +55,5 @@ Run/Data/Models/Sponza/
 # ONNX Runtime (Code/ThirdParty/get_onnxruntime.ps1) and the Python env for ml/
 Code/ThirdParty/onnxruntime/
 ml/.venv/
+Run/Data/DenoiseSet*/
 __pycache__/

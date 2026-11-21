@@ -29,8 +29,14 @@
 #include <cmath>
 #include "Engine/Renderer/VulkanRenderer.h"
 #include "Game/NeuralDenoiser.hpp"
+#include "Game/DenoiseCapture.hpp"
+#include <atomic>
+#include <condition_variable>
+#include <thread>
+#include "Engine/Job/JobSystem.h"
 
 extern NeuralDenoiser* g_theDenoiser;
+extern DenoiseCapture* g_theDenoiseCapture;
 #include "Engine/Renderer/VulkanDeferredPath.h"
 #include "Engine/Renderer/VulkanRTPath.h"
 #include "Engine/Audio/AudioSystem.hpp"
@@ -117,6 +123,15 @@ void Game::Update()
 	}
 
 	AdjustForPauseAndTimeDistortion();
+
+	if (g_theJobSystem)
+	{
+		for (Job* job : g_theJobSystem->RetrieveCompletedJobs())
+		{
+			job->OnComplete();
+			delete job;
+		}
+	}
 
 	if (m_isInAttractMode)
 	{
@@ -220,6 +235,11 @@ void Game::Render() const
 
 		if (m_useRTPath && g_theRTPath)
 		{
+			VulkanRTPath::DenoiseFrame dn = g_theRTPath->BeginDenoiseFrame();
+			const bool capturing = g_theDenoiseCapture && g_theDenoiseCapture->IsActive();
+			if (capturing)
+				g_theDenoiseCapture->Update(dn, m_player->m_position, m_player->m_orientation);
+
 			Vec3 fwd, left, up;
 			m_player->m_orientation.GetAsVectors_IFwd_JLeft_KUp(fwd, left, up);
 			Vec3 right = -1.0f * left;
@@ -239,8 +259,7 @@ void Game::Render() const
 			IntVec2 winDim = g_theWindow->GetClientDimensions();
 			const uint32_t w = (uint32_t)winDim.x;
 			const uint32_t h = (uint32_t)winDim.y;
-			VulkanRTPath::DenoiseFrame dn = g_theRTPath->BeginDenoiseFrame();
-			bool denoised = m_useDenoiser && g_theDenoiser && g_theDenoiser->Update(dn);
+			bool denoised = !capturing && m_useDenoiser && g_theDenoiser && g_theDenoiser->Update(dn);
 			g_theRTPath->TraceRays(cmd, w, h);
 			g_theRTPath->EndDenoiseFrame(cmd, denoised);
 			g_theRTPath->BlitToSwapImage(cmd, w, h, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
@@ -275,6 +294,10 @@ void Game::Render() const
 				DebugAddScreenText(dnBuf,
 				                   m_screenCamera.GetOrthographicTopRight() - Vec2(580.f, 90.f),
 				                   12.f, Vec2::ZERO, 0.f);
+				if (g_theDenoiseCapture && !g_theDenoiseCapture->Status().empty())
+					DebugAddScreenText(g_theDenoiseCapture->Status(),
+					                   m_screenCamera.GetOrthographicTopRight() - Vec2(580.f, 110.f),
+					                   12.f, Vec2::ZERO, 0.f);
 
 				g_theDeferred->BeginForwardOverlay(cmd, swapIdx);
 				DebugRenderScreen(m_screenCamera);

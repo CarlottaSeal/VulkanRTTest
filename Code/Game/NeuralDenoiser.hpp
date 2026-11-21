@@ -25,6 +25,7 @@ public:
 
     // Main thread, once per RT frame. Returns true if frame.upload was filled.
     bool Update(const VulkanRTPath::DenoiseFrame& frame);
+    void OnJobDone(DenoiseJob* job);  // from DenoiseJob::OnComplete, main thread
 
     // Call after JobSystem::Shutdown, which owns (and deletes) any job still queued.
     void ForgetInFlightJob() { m_inFlight = nullptr; }

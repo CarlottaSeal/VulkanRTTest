@@ -24,6 +24,7 @@
 
 #include "Game/App.hpp"
 #include "Game/NeuralDenoiser.hpp"
+#include "Game/DenoiseCapture.hpp"
 #include "Game/Game.hpp"
 #include "Game/Gamecommon.hpp"
 #include "Game/EngineBuildPreferences.hpp"
@@ -35,6 +36,7 @@ Renderer* g_theRenderer = nullptr;
 VulkanDeferredPath* g_theDeferred = nullptr;
 VulkanRTPath* g_theRTPath = nullptr;
 NeuralDenoiser* g_theDenoiser = nullptr;
+DenoiseCapture* g_theDenoiseCapture = nullptr;
 InputSystem* g_theInput = nullptr;
 //AudioSystem* g_theAudio = nullptr;
 Window* g_theWindow = nullptr;
@@ -366,9 +368,11 @@ void App::Startup()
 		g_theRTPath->CreateSBT();
 		g_theRTPath->UpdateDescriptors(s_sceneTLAS, s_sponzaBLAS);
 
-		// One worker drives the inference; ORT's own pool does the math.
-		g_theJobSystem = new JobSystem(JobSystemConfig{ 1, 0 });
+		// One worker drives the inference (ORT's own pool does the math), one
+		// IO thread writes capture samples.
+		g_theJobSystem = new JobSystem(JobSystemConfig{ 1, 1 });
 		g_theJobSystem->Startup();
+		g_theDenoiseCapture = new DenoiseCapture();
 
 		g_theDenoiser = new NeuralDenoiser();
 		int ortThreads = (int)std::thread::hardware_concurrency() / 2;
@@ -385,6 +389,7 @@ void App::Startup()
 	g_theGame->m_gameClock = new Clock(Clock::GetSystemClock());
 
 	g_theEventSystem->SubscribeEventCallBackFunction("quit", OnQuitEvent);
+	g_theEventSystem->SubscribeEventCallBackFunction("denoise_capture", OnDenoiseCaptureEvent);
 
 	g_theDevConsole->AddLine(Rgba8::BLUE, "Type help for a list of commands");
 }
@@ -396,6 +401,8 @@ void App::Shutdown()
 
 #ifdef ENGINE_VULKAN_RENDERER
 	if (g_theJobSystem) { g_theJobSystem->Shutdown(); delete g_theJobSystem; g_theJobSystem = nullptr; }
+	delete g_theDenoiseCapture;
+	g_theDenoiseCapture = nullptr;
 	if (g_theDenoiser)
 	{
 		g_theDenoiser->ForgetInFlightJob();
@@ -556,5 +563,19 @@ bool OnQuitEvent(EventArgs& args)
 {
 	UNUSED(args);
 	g_theApp->HandleQuitRequested();
+	return true;
+}
+
+// denoise_capture poses=200 frames=512 dir=Data/DenoiseSet
+// Runs in RT mode (V); the camera is taken over until it finishes.
+bool OnDenoiseCaptureEvent(EventArgs& args)
+{
+	if (!g_theDenoiseCapture) return false;
+	int poses  = args.GetValue("poses", 200);
+	int frames = args.GetValue("frames", 512);
+	std::string dir = args.GetValue("dir", "Data/DenoiseSet");
+	g_theDenoiseCapture->Start(dir, poses, frames);
+	g_theDevConsole->AddLine(Rgba8::GREEN, Stringf("denoise_capture: %d poses x %d frames -> %s (switch to RT mode with V)",
+	                                               poses, frames, dir.c_str()));
 	return true;
 }

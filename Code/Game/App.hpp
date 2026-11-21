@@ -63,3 +63,4 @@ private:
 };
 
 bool OnQuitEvent(EventArgs& args);
+bool OnDenoiseCaptureEvent(EventArgs& args);
