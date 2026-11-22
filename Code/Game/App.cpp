@@ -502,6 +502,9 @@ void App::RunFrame()
 	Update();
 	Render();
 	EndFrame();
+
+	if (g_theGame && g_theGame->m_syncGpuEachFrame && !g_theGame->m_isInAttractMode)
+		vkDeviceWaitIdle(g_theRenderer->GetSubRenderer()->GetDevice());
 }
 
 void App::Update()

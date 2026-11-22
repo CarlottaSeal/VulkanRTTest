@@ -118,6 +118,10 @@ void Game::Update()
 	{
 		g_theRTPath->SetNeuralDenoiseCoopMat(!g_theRTPath->GetNeuralDenoiseCoopMat());
 	}
+	if (g_theApp->WasKeyJustPressed('L'))
+	{
+		m_syncGpuEachFrame = !m_syncGpuEachFrame;
+	}
 
 	if (g_theDevConsole->GetMode() == OPEN_FULL)
 	{
@@ -202,10 +206,11 @@ void Game::Render() const
 
 	char fpsBuf[96];
 	snprintf(fpsBuf, sizeof(fpsBuf),
-	         " FPS: %.1f   dt: %.2f ms   trace: %.2f ms",
+	         " FPS: %.1f   dt: %.2f ms   trace: %.2f ms   gpu sync: %s [L]",
 	         (float)m_gameClock->GetFrameRate(),
 	         (float)m_gameClock->GetDeltaSeconds() * 1000.f,
-	         g_theRTPath->GetTraceMs());
+	         g_theRTPath->GetTraceMs(),
+	         m_syncGpuEachFrame ? "on" : "off");
 	DebugAddScreenText(fpsBuf,
 	                   m_screenCamera.GetOrthographicTopRight() - Vec2(580.f, 70.f),
 	                   12.f, Vec2::ZERO, 0.f);
@@ -319,6 +324,7 @@ void Game::PrintGameControlToDevConsole()
 	g_theDevConsole->AddLine(Rgba8::CYAN, "B - Toggle denoiser");
 	g_theDevConsole->AddLine(Rgba8::CYAN, "G - Denoise on GPU / CPU");
 	g_theDevConsole->AddLine(Rgba8::CYAN, "M - GPU denoiser mid layers: tensor core / fp32 shader");
+	g_theDevConsole->AddLine(Rgba8::CYAN, "L - Wait for the GPU every frame (avoids denoiser stalls)");
 	g_theDevConsole->AddLine(Rgba8::CYAN, "P - Pause the game");
 	g_theDevConsole->AddLine(Rgba8::CYAN, "O - Single step frame");
 	g_theDevConsole->AddLine(Rgba8::CYAN, "T - Slow motion mode");
