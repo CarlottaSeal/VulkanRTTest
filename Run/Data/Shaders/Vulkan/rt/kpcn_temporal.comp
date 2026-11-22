@@ -9,8 +9,11 @@
 // (ghosting), chroma at +-2.5 sigma. The residual noise is mostly low-frequency
 // colour blotches from ReSTIR's per-pixel coloured-light pick; they are smooth
 // over 3x3, so a tight chroma box would snap history back onto them.
-// Blend weight is max(1/(n+1), 0.05) with n the pixel's history length, so a
-// fresh pixel takes the current frame and a stable one averages ~20 frames.
+// Blend weight is 1/(n+1) with n the pixel's history length, so a fresh pixel
+// takes the current frame. n is capped at 19 (~20 frames) while the camera
+// moves; with the camera still (the scene and lights are static) the box would
+// only drag history around with the current frame's noise, which reads as
+// shimmer, so clipping is skipped and n may grow to 63.
 // History stores (rgb, distance to that frame's eye, n) as halves; sky pixels
 // skip all of this.
 
@@ -37,8 +40,8 @@ layout(set = 0, binding = 9) buffer History { uvec4 hist[]; };  // two halves, p
 // wOff/bOff slots reused: which history half to read, and 1 to drop history.
 layout(push_constant) uniform PC { ivec2 size; int histRead; int reset; } pc;
 
-const float kAlphaMin     = 0.05;
-const float kMaxHistory   = 1.0 / kAlphaMin - 1.0;
+const float kMaxHistoryMoving = 19.0;
+const float kMaxHistoryStill  = 63.0;
 const float kLumaSigma    = 1.25;
 const float kChromaSigma  = 2.5;
 
@@ -106,7 +109,17 @@ void main()
             }
         }
 
-        if (wsum > 1e-3)
+        const bool still = distance(cam.eye_aspect.xyz, cam.prev_eye_aspect.xyz) < 1e-5
+                        && dot(cam.forward_fovTan.xyz, cam.prev_forward_fovTan.xyz) > 0.9999999
+                        && dot(cam.up_pad.xyz, cam.prev_up_pad.xyz) > 0.9999999;
+        if (wsum > 1e-3 && still)
+        {
+            // Same pixel, no bilinear: 64 frames of a tiny reprojection offset would blur.
+            uvec4 h0 = hist[readBase + idx];
+            len    = min(unpackHalf2x16(h0.z).x + 1.0, kMaxHistoryStill);
+            result = mix(vec3(unpackHalf2x16(h0.x), unpackHalf2x16(h0.y).x), cur, 1.0 / (len + 1.0));
+        }
+        else if (wsum > 1e-3)
         {
             vec3 m1 = vec3(0.0), m2 = vec3(0.0);
             for (int dy = -1; dy <= 1; ++dy)
@@ -120,7 +133,7 @@ void main()
             vec3 sigma = sqrt(max(m2 / 9.0 - m1 * m1, vec3(0.0)));
             vec3 k     = vec3(kLumaSigma, kChromaSigma, kChromaSigma);
             vec3 h     = fromYCoCg(clamp(toYCoCg(hsum / wsum), m1 - k * sigma, m1 + k * sigma));
-            len    = min(lsum / wsum + 1.0, kMaxHistory);
+            len    = min(lsum / wsum + 1.0, kMaxHistoryMoving);
             result = mix(h, cur, 1.0 / (len + 1.0));
         }
     }
