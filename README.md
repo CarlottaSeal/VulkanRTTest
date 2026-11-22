@@ -76,7 +76,7 @@ RTX 4080 Laptop, 1600×800, no vsync:
 | `B` | denoiser on / off |
 | `G` | denoise on GPU (Vulkan compute) / CPU (ONNX Runtime) |
 | `M` | GPU denoiser mid layers: tensor cores / fp32 shader |
-| `L` | wait for the GPU every frame (default on, avoids intermittent denoiser stalls) |
+| `L` | wait for the GPU every frame (default off; can avoid intermittent denoiser stalls) |
 | WASD + mouse | fly camera (Igloo: x-forward, y-left, z-up) |
 | `ESC` | quit |
 | ` ` ` (backtick) | dev console |

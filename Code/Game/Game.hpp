@@ -43,8 +43,8 @@ private:
 public:
 	// L: wait for the GPU at the end of every frame. With the GPU saturated back to back,
 	// the denoiser passes intermittently stall for ~5 frames (DRAM write storm, 20 FPS);
-	// the small idle gap this leaves avoids most of them for ~2% FPS.
-	bool m_syncGpuEachFrame  = true;
+	// the small idle gap this leaves avoided most of them in testing for ~2% FPS.
+	bool m_syncGpuEachFrame  = false;
 private:
 	mutable uint32_t m_rtFrameId = 0;
 	bool m_isSlowMo;
